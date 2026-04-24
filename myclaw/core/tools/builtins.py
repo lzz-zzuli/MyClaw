@@ -5,6 +5,7 @@ import json
 import uuid
 import threading
 from ..config import MEMORY_DIR, TASKS_FILE
+from ..skill_loader import load_skill_content
 from .sandbox_tools import (
     list_office_files,
     read_office_file,
@@ -257,6 +258,22 @@ def modify_scheduled_task(task_id: str, new_time: str = None, new_description: s
             return f"操作异常：{str(e)}"
 
 
+@my_tool
+def load_skill(skill_name: str) -> str:
+    """
+    按需加载某个 skill 的完整内容。
+
+    使用场景：
+    1. 你已从 System Prompt 中的 skill 索引看到可用的 skill 列表
+    2. 用户的问题与某个 skill 的触发词相关（如提到"毛泽东"、"毛选"等）
+    3. 你判断需要深入了解该 skill 的方法论或工具
+
+    参数 skill_name 应来自已加载的 skill 索引列表中的 name 字段。
+    返回完整的 SKILL.md 内容，包含知识、方法论、工具定义等。
+    """
+    return load_skill_content(skill_name)
+
+
 BUILTIN_TOOLS = [
     get_current_time,
     calculator,
@@ -269,5 +286,6 @@ BUILTIN_TOOLS = [
     schedule_task,
     list_scheduled_tasks,
     delete_scheduled_task,
-    modify_scheduled_task
+    modify_scheduled_task,
+    load_skill
 ]
