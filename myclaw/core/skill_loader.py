@@ -1,28 +1,56 @@
 import os
-import re
+import yaml
 from typing import List, Optional
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
+from dataclasses import dataclass, field
 
 from .config import SKILLS_DIR
-from .tools.sandbox_tools import execute_office_shell
 
 
-class DynamicSkillInput(BaseModel):
-    """动态技能加载器输入"""
-    mode: str = Field(
-        description="必须是 'help' 或 'run'。第一次使用时强烈建议先传入 'help' 阅读说明书。"
-    )
-    command: Optional[str] = Field(
-        default="", 
-        description="仅在 mode='run' 时需要。你要执行的完整命令，保留 {baseDir} 占位符。"
-    )
+@dataclass
+class TriggerWords:
+    """触发词配置"""
+    exact: List[str] = field(default_factory=list)   # 精确触发词
+    fuzzy: List[str] = field(default_factory=list)   # 模糊触发词
 
-def load_dynamic_skills() -> List[StructuredTool]:
-    loaded_skills = []
-    
+
+@dataclass
+class SkillIndex:
+    """轻量级 skill 索引，用于注入 System Prompt"""
+    name: str
+    description: str
+    trigger_words: TriggerWords
+    folder_name: str  # 文件夹名称，用于后续加载完整内容
+
+
+def parse_frontmatter(content: str) -> dict:
+    """
+    解析 SKILL.md 的 YAML frontmatter。
+    格式：--- 开头和结尾的 YAML 块
+    """
+    if not content.startswith("---"):
+        return {}
+
+    # 找到第二个 --- 的位置
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}
+
+    yaml_content = parts[1].strip()
+    try:
+        return yaml.safe_load(yaml_content) or {}
+    except yaml.YAMLError:
+        return {}
+
+
+def scan_skill_index() -> List[SkillIndex]:
+    """
+    第一阶段：扫描所有 skill，生成轻量索引。
+    只读取 name、description、trigger_words，用于注入 System Prompt。
+    """
+    skill_indices: List[SkillIndex] = []
+
     if not os.path.exists(SKILLS_DIR):
-        return loaded_skills
+        return skill_indices
 
     for item in os.listdir(SKILLS_DIR):
         folder_path = os.path.join(SKILLS_DIR, item)
@@ -32,7 +60,7 @@ def load_dynamic_skills() -> List[StructuredTool]:
         md_path = os.path.join(folder_path, "SKILL.md")
         if not os.path.exists(md_path):
             md_path = os.path.join(folder_path, "README.md")
-        
+
         if not os.path.exists(md_path):
             continue
 
@@ -40,62 +68,116 @@ def load_dynamic_skills() -> List[StructuredTool]:
             with open(md_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            name_match = re.search(r"^name:\s*(.+)$", content, re.MULTILINE)
-            desc_match = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
+            frontmatter = parse_frontmatter(content)
 
-            raw_name = name_match.group(1).strip() if name_match else item
-            tool_name = re.sub(r'[^a-zA-Z0-9_-]', '_', raw_name)
-            
-            raw_desc = desc_match.group(1).strip() if desc_match else f"提供 {raw_name} 相关功能"
-            if (raw_desc.startswith('"') and raw_desc.endswith('"')) or (raw_desc.startswith("'") and raw_desc.endswith("'")):
-                raw_desc = raw_desc[1:-1]
+            # 解析 name
+            raw_name = frontmatter.get("name", item)
+            if isinstance(raw_name, str):
+                name = raw_name.strip()
+            else:
+                name = item
 
-            mini_description = (
-                f"{raw_desc}\n\n"
-                f"注意：这是一个外部扩展技能。首次使用请务必先传入 `mode='help'` 来阅读完整说明书，之后再使用 `mode='run'` 配合 `command` 执行底层脚本。"
-            )
+            # 解析 description
+            raw_desc = frontmatter.get("description", f"提供 {name} 相关功能")
+            if isinstance(raw_desc, str):
+                description = raw_desc.strip()
+            else:
+                description = str(raw_desc)
 
-            def create_skill_runner(skill_folder_name: str, md_content: str):
-                def runner(mode: str, command: str = "") -> str:
-                    if mode == "help":
-                        return (
-                            f"========== 【{skill_folder_name} 完整说明书】 ==========\n"
-                            f"{md_content[:10000]}\n"
-                            f"====================================\n"
-                            f"提示：请根据以上说明，如果觉得能解决问题，就将 mode 设为 'run'，并将拼装好的执行命令填入 command 重新调用。否则就尝试其他工具，没有其他合适工具就老实跟用户说"
-                        )
-                    elif mode == "run":
-                        if not command:
-                            return "错误：在 'run' 模式下，必须提供 command 参数！"
-                        
-                        actual_cmd = command.replace("{baseDir}", f"skills/{skill_folder_name}")
-                        return execute_office_shell.invoke({"command": actual_cmd})
-                    else:
-                        return "错误：mode 参数只能是 'help' 或 'run'。"
-                return runner
+            # 解析 trigger_words（支持对象格式和简单列表格式）
+            trigger_words = TriggerWords()
+            tw_data = frontmatter.get("trigger_words", {})
 
-            dynamic_tool = StructuredTool.from_function(
-                func=create_skill_runner(item, content),
-                name=tool_name,
-                description=mini_description,
-                args_schema=DynamicSkillInput
-            )
-            loaded_skills.append(dynamic_tool)
+            if isinstance(tw_data, dict):
+                # 对象格式：{ exact: [...], fuzzy: [...] }
+                trigger_words.exact = tw_data.get("exact", [])
+                trigger_words.fuzzy = tw_data.get("fuzzy", [])
+            elif isinstance(tw_data, list):
+                # 简单列表格式：全部作为 fuzzy 触发词
+                trigger_words.fuzzy = tw_data
+
+            skill_indices.append(SkillIndex(
+                name=name,
+                description=description,
+                trigger_words=trigger_words,
+                folder_name=item
+            ))
 
         except Exception as e:
-            print(f" \033[38;5;196m[警告] 技能包 {item} 加载失败: {e}\033[0m")
-    # 返回 示例
-    #     [
-    #     StructuredTool(
-    #         name="weather",
-    #         description="获取全球城市的实时天气预报\n注意：首次使用请先传入 mode='help'...",
-    #         args_schema=DynamicSkillInput  # mode + command
-    #     ),
-    #     StructuredTool(
-    #         name="skill-creator",
-    #         description="用自然语言创建新技能...",
-    #         args_schema=DynamicSkillInput
-    #     ),
-    #     ...
-    # ]
-    return loaded_skills
+            print(f" \033[38;5;196m[警告] 技能包 {item} 索引扫描失败: {e}\033[0m")
+
+    return skill_indices
+
+
+def load_skill_content(skill_name: str) -> str:
+    """
+    第二阶段：按需加载某个 skill 的完整 SKILL.md 内容。
+
+    参数:
+        skill_name: skill 的 name 字段（来自索引）
+
+    返回:
+        完整的 SKILL.md 内容（不截断）
+    """
+    if not os.path.exists(SKILLS_DIR):
+        return f"错误：技能目录不存在。"
+
+    # 先通过索引查找匹配的 folder_name
+    skill_indices = scan_skill_index()
+    matched_folder = None
+
+    for idx in skill_indices:
+        if idx.name == skill_name:
+            matched_folder = idx.folder_name
+            break
+
+    if not matched_folder:
+        # 尝试直接用 skill_name 作为文件夹名
+        potential_path = os.path.join(SKILLS_DIR, skill_name)
+        if os.path.isdir(potential_path):
+            matched_folder = skill_name
+
+    if not matched_folder:
+        available_names = [idx.name for idx in skill_indices]
+        return f"错误：未找到名为 '{skill_name}' 的 skill。可用的 skill：{', '.join(available_names)}"
+
+    md_path = os.path.join(SKILLS_DIR, matched_folder, "SKILL.md")
+    if not os.path.exists(md_path):
+        md_path = os.path.join(SKILLS_DIR, matched_folder, "README.md")
+
+    if not os.path.exists(md_path):
+        return f"错误：skill '{skill_name}' 没有 SKILL.md 或 README.md 文件。"
+
+    try:
+        with open(md_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        return f"错误：读取 skill '{skill_name}' 内容失败：{str(e)}"
+
+
+def get_skill_index_text() -> str:
+    """
+    生成用于注入 System Prompt 的 skill 索引文本。
+    格式化输出，方便 LLM 快速浏览。
+    """
+    skill_indices = scan_skill_index()
+
+    if not skill_indices:
+        return "当前没有加载任何外部 skill。"
+
+    lines = []
+    for idx in skill_indices:
+        # 构建触发词展示
+        triggers = []
+        if idx.trigger_words.exact:
+            triggers.append(f"精确: {', '.join(idx.trigger_words.exact[:3])}")
+        if idx.trigger_words.fuzzy:
+            triggers.append(f"模糊: {', '.join(idx.trigger_words.fuzzy[:3])}")
+        trigger_text = " | ".join(triggers) if triggers else "无触发词"
+
+        # 截断 description 到 80 字符
+        short_desc = idx.description[:80] + "..." if len(idx.description) > 80 else idx.description
+
+        lines.append(f"- **{idx.name}**: {short_desc} ({trigger_text})")
+
+    return "\n".join(lines)
