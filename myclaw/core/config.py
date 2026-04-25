@@ -11,6 +11,7 @@ WORKSPACE_DIR = os.getenv("MyCLAW_WORKSPACE", os.path.join(PROJECT_ROOT, "worksp
 
 
 DB_PATH = os.path.join(WORKSPACE_DIR, "state.sqlite3")     # 状态机：潜意识与短期记忆
+SESSIONS_FILE = os.path.join(WORKSPACE_DIR, "sessions.json") # 会话元数据：名字、描述、计数
 MEMORY_DIR = os.path.join(WORKSPACE_DIR, "memory")         # 显性记忆：Markdown 画像
 PERSONAS_DIR = os.path.join(WORKSPACE_DIR, "personas")     # 人设区：系统 Prompt
 SCRIPTS_DIR = os.path.join(WORKSPACE_DIR, "scripts")       # 脚本区：自动化武器库

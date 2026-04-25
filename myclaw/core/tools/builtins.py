@@ -1,5 +1,5 @@
 from datetime import datetime
-from .base import my_tool, MyClawBaseTool
+from .base import my_tool, MyClawBaseTool, get_current_thread_id
 import os
 import json
 import uuid
@@ -22,7 +22,7 @@ PROFILE_PATH = os.path.join(MEMORY_DIR, "user_profile.md")
 def get_system_model_info() -> str:
     """
     获取当前 MyClaw 正在运行的底层大模型（LLM）型号和提供商信息。
-    当用户询问“你是基于什么模型”、“你的底层大模型是什么”、“你是GPT还是GLM”、“现在用的什么模型”等身份问题时，调用此工具。
+    当用户询问"你是基于什么模型"、"你的底层大模型是什么"、"你是GPT还是GLM"、"现在用的什么模型"等身份问题时，调用此工具。
     """
     provider = os.getenv("DEFAULT_PROVIDER", "unknown")
     model = os.getenv("DEFAULT_MODEL", "unknown")
@@ -54,7 +54,7 @@ def save_user_profile(new_content: str) -> str:
 def get_current_time() -> str:
     """
     获取当前的系统时间和日期。
-    当用户询问“现在几点”、“今天星期几”、“今天几号”等与当前时间相关的问题时，调用此工具。
+    当用户询问"现在几点"、"今天星期几"、"今天几号"等与当前时间相关的问题时，调用此工具。
     """
     now = datetime.now()
     return f"当前本地系统时间是: {now.strftime('%Y-%m-%d %H:%M:%S')}"
@@ -94,12 +94,12 @@ def schedule_task(target_time: str, description: str, repeat: str = None, repeat
     3. 用户说："明早8点叫我起床" -> repeat=None, repeat_count=None (单次任务)
 
     【时间歧义严格确认协议 (AM/PM Ambiguity CRITICAL)】：
-    当用户说出的时间存在 12 小时制的模糊性时（例如：只说了“7点”，没明确说早上还是晚上）：
+    当用户说出的时间存在 12 小时制的模糊性时（例如：只说了"7点"，没明确说早上还是晚上）：
     1. 你必须向用户提问确认是上午还是下午。
-    2. 【死命令】：在用户明确回复“上午”或“下午”（或改为24小时制）之前，本工具处于【绝对锁定状态】！
-    3. 就算用户发省略号（如“。。”）、发脾气、或者说无关内容，你也【绝对禁止】为了讨好用户而自行猜测时间！
-    4. 严禁出现“抱歉多问了”、“默认早上”这种妥协行为。
-    5. 如果用户不明确回答，你必须坚定地回复：“抱歉，没有明确上下午，我无权为您设置闹钟。请明确告知时间段。”并立即中止工具调用。
+    2. 【死命令】：在用户明确回复"上午"或"下午"（或改为24小时制）之前，本工具处于【绝对锁定状态】！
+    3. 就算用户发省略号（如"。。"）、发脾气、或者说无关内容，你也【绝对禁止】为了讨好用户而自行猜测时间！
+    4. 严禁出现"抱歉多问了"、"默认早上"这种妥协行为。
+    5. 如果用户不明确回答，你必须坚定地回复："抱歉，没有明确上下午，我无权为您设置闹钟。请明确告知时间段。"并立即中止工具调用。
     """
     try:
         datetime.strptime(target_time, "%Y-%m-%d %H:%M:%S")
@@ -119,6 +119,7 @@ def schedule_task(target_time: str, description: str, repeat: str = None, repeat
 
         new_task = {
             "id": str(uuid.uuid4())[:8],
+            "thread_id": get_current_thread_id(),
             "target_time": target_time,
             "description": description,
             "repeat": repeat,
@@ -142,24 +143,33 @@ def schedule_task(target_time: str, description: str, repeat: str = None, repeat
 def list_scheduled_tasks() -> str:
     """
     查看当前所有待处理的定时任务列表。
-    当用户询问“我都有哪些任务”、“查一下闹钟”、“刚才定了什么”时调用此工具。
+    当用户询问"我都有哪些任务"、"查一下闹钟"、"刚才定了什么"时调用此工具。
     """
+    current_thread = get_current_thread_id()
+
     with tasks_lock:
         if not os.path.exists(TASKS_FILE):
             return "当前没有任何定时任务。"
-        
+
         try:
             with open(TASKS_FILE, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if not content:
                     return "任务列表为空。"
                 tasks = json.loads(content)
-            
+
             if not tasks:
                 return "当前没有任何定时任务。"
-            
+
+            # 只显示当前会话的任务
+            if current_thread:
+                tasks = [t for t in tasks if t.get("thread_id") == current_thread]
+
+            if not tasks:
+                return "当前会话没有定时任务。"
+
             tasks.sort(key=lambda x: x['target_time'])
-            
+
             res = " 当前待执行任务列表：\n"
             for t in tasks:
                 res += f"- [ID: {t['id']}] 时间: {t['target_time']} | 任务: {t['description']}\n"
@@ -181,7 +191,7 @@ def delete_scheduled_task(task_id: str) -> str:
     【你必须执行的动作】：
     【禁止】在单次回复中针对同一个模糊描述发起多个删除工具调用。
     你必须先列出所有匹配的任务（1. 2. 3.），并询问用户：
-    “发现了多个符合条件的提醒（列出列表），为了安全起见，请问是要全部删除，还是只删除其中几个？”
+    "发现了多个符合条件的提醒（列出列表），为了安全起见，请问是要全部删除，还是只删除其中几个？"
     必须要用户明确给出编号或者说确定全部删除，才能调用此工具！！
     严禁自作主张执行批量删除。
     """
@@ -214,15 +224,15 @@ def modify_scheduled_task(task_id: str, new_time: str = None, new_description: s
     修改现有定时任务的时间或内容。
     
     【强制性风险控制协议 (CRITICAL)】：
-    1. 只要用户通过“模糊描述”（如：那个5天的任务、洗澡的任务）来要求修改，而没有直接提供 ID。
-    2. 无论用户的话语看起来是单数还是复数（如：“把5天的任务全改了”）。
+    1. 只要用户通过"模糊描述"（如：那个5天的任务、洗澡的任务）来要求修改，而没有直接提供 ID。
+    2. 无论用户的话语看起来是单数还是复数（如："把5天的任务全改了"）。
     3. 只要系统中匹配到的任务数量 > 1。
     
     【你必须执行的动作】：
     禁止直接调用本工具！你必须向用户展示匹配到的所有任务列表，并强制询问：
-    “我发现有 [N] 个任务符合描述（列出列表），请问你是要【全部修改】，还是修改其中【某几个】？（请告诉我编号或确认全部）”
+    "我发现有 [N] 个任务符合描述（列出列表），请问你是要【全部修改】，还是修改其中【某几个】？（请告诉我编号或确认全部）"
     
-    必须在用户回复“全部”或者指定了具体编号后，你才能继续操作！修改任务并非小事,这是为了安全！！
+    必须在用户回复"全部"或者指定了具体编号后，你才能继续操作！修改任务并非小事,这是为了安全！！
     """
 
     with tasks_lock:

@@ -165,7 +165,11 @@ def _show_boot_error():
 
 
 @app.command("run")
-def run_agent():
+def run_agent(
+    resume: str = typer.Option(None, "-r", "--resume", help="恢复指定会话名称"),
+    list_sessions: bool = typer.Option(False, "-l", "--list", help="显示历史会话列表"),
+    name: str = typer.Option(None, "-n", "--name", help="命名新会话或重命名现有会话")
+):
     load_dotenv(ENV_PATH)
     provider = os.getenv("DEFAULT_PROVIDER")
     model = os.getenv("DEFAULT_MODEL")
@@ -173,18 +177,22 @@ def run_agent():
         _show_boot_error()
         raise typer.Exit()
     if provider != "ollama":
-        if provider in ["openai", "aliyun", "z.ai", "tencent", "other"]: 
+        if provider in ["openai", "aliyun", "z.ai", "tencent", "other"]:
             if not os.getenv("OPENAI_API_KEY"):
                 _show_boot_error()
                 raise typer.Exit()
-                
+
         elif provider == "anthropic":
             if not os.getenv("ANTHROPIC_API_KEY"):
                 _show_boot_error()
                 raise typer.Exit()
-        
+
     import entry.main as myclaw_main
-    myclaw_main.main()
+    # 如果指定了 --list，则传入空字符串触发列表显示
+    if list_sessions:
+        myclaw_main.main(resume="", session_name=name)
+    else:
+        myclaw_main.main(resume=resume, session_name=name)
 
 @app.command("monitor")
 def run_monitor():    

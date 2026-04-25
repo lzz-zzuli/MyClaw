@@ -3,6 +3,19 @@ from langchain_core.tools import BaseTool, tool
 from abc import ABC, abstractmethod
 import asyncio
 from pydantic import BaseModel, Field
+import threading
+
+# 全局状态：存储当前会话的 thread_id
+_current_thread_id = threading.local()
+
+def set_current_thread_id(thread_id: str):
+    """设置当前会话的 thread_id"""
+    _current_thread_id.value = thread_id
+
+def get_current_thread_id() -> str:
+    """获取当前会话的 thread_id"""
+    return getattr(_current_thread_id, "value", None)
+
 
 # 将 LangChain 原生的 @tool 装饰器重命名并暴露出去。
 # 开发者在使用 MyClaw 写简单工具时，只需要加一个装饰器和写好 docstring 即可。

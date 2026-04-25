@@ -36,13 +36,14 @@ myclaw/core/
 ├── agent.py          # Agent 决策引擎（LangGraph 状态图）
 ├── context.py        # 上下文裁剪 + 状态定义
 ├── provider.py       # 多模型提供商适配器
+├── session.py        # 多会话管理（元数据 + 命名）
 ├── bus.py            # 异步任务队列总线
 ├── heartbeat.py      # 心跳任务引擎
 ├── logger.py         # 审计日志系统
 ├── skill_loader.py   # 动态技能加载器
 ├── config.py         # 配置管理
 └── tools/
-    ├── base.py       # 工具装饰器
+    ├── base.py       # 工具装饰器 + thread_id 管理
     ├── builtins.py   # 内置工具集
     └── sandbox_tools.py  # 沙盒安全工具
 ```
@@ -373,7 +374,7 @@ myclaw config
 ### 3️⃣ 运行
 
 ```bash
-# 启动主程序
+# 启动主程序（创建新会话）
 myclaw run
 
 # 启动监控终端（另一个终端）
@@ -382,10 +383,47 @@ myclaw monitor
 
 ---
 
+## 📂 会话管理
+
+MyClaw 支持**多会话隔离**，每个会话拥有独立的对话历史、日志和定时任务。
+
+### 会话操作
+
+| 命令 | 说明 |
+|------|------|
+| `myclaw run` | 创建新会话（自动生成 session_id） |
+| `myclaw run -n "工作助手"` | 创建新会话并命名 |
+| `myclaw run -l` | 显示历史会话列表（交互选择） |
+| `myclaw run -r "会话名称"` | 恢复指定会话 |
+| `/rename 新名字` | 在会话内重命名当前会话 |
+| `/exit` | 退出当前会话（自动生成会话描述） |
+
+### 会话数据存储
+
+| 文件 | 说明 |
+|------|------|
+| `workspace/sessions.json` | 会话元数据（名称、描述、消息计数） |
+| `workspace/state.sqlite3` | LangGraph 状态持久化（对话历史） |
+| `logs/{session_id}.jsonl` | 每个会话独立的审计日志 |
+| `workspace/tasks.json` | 定时任务（按 session_id 分离） |
+
+### 会话隔离机制
+
+- **对话历史**：每个会话独立的 SQLite checkpoint
+- **定时任务**：仅显示/触发当前会话的任务
+- **审计日志**：每个会话独立 JSONL 文件
+- **用户画像**：全局共享（所有会话可见）
+
+---
+
 ## 📊 常用命令示例
 
 | 类型 | 命令示例 | 说明 |
 |------|----------|------|
+| 🆕 新会话 | `myclaw run` | 创建新会话 |
+| 📋 会话列表 | `myclaw run -l` | 显示历史会话 |
+| 🔙 恢复会话 | `myclaw run -r "工作助手"` | 恢复指定会话 |
+| ✏️ 重命名 | `/rename 项目讨论` | 重命名当前会话 |
 | ⏰ 时间查询 | `现在几点了？` | 获取当前时间 |
 | 🧮 数学计算 | `帮我算一下 25 乘以 48` | 调用计算器 |
 | ⏲️ 定时任务 | `每天早上 8 点提醒我喝水` | 创建循环任务 |
@@ -407,6 +445,7 @@ MyClaw/
 │       ├── agent.py           # Agent 决策引擎
 │       ├── context.py         # 上下文裁剪
 │       ├── provider.py        # 多模型适配
+│       ├── session.py         # 会话管理
 │       ├── bus.py             # 任务总线
 │       ├── heartbeat.py       # 心跳引擎
 │       ├── logger.py          # 审计日志
@@ -421,10 +460,13 @@ MyClaw/
 ├── workspace/
 │   ├── office/                # 沙盒工位
 │   │   └── skills/            # 可插拔技能
-│   └── memory/
-│       └── user_profile.md    # 用户画像
+│   ├── memory/
+│   │   └── user_profile.md    # 用户画像
+│   ├── sessions.json          # 会话元数据
+│   ├── state.sqlite3          # LangGraph 状态持久化
+│   └── tasks.json             # 定时任务队列
 ├── logs/
-│   └── *.jsonl                # 审计日志
+│   └── *.jsonl                # 审计日志（每会话一个文件）
 ├── tests/                     # 测试套件
 ├── pyproject.toml             # 项目配置
 └── README.md                  # 说明文档

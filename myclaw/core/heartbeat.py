@@ -6,16 +6,20 @@ from .config import TASKS_FILE
 from .bus import task_queue
 from .tools.builtins import tasks_lock 
 # 心跳任务引擎，主要负责后台自动触发定时任务
-async def pacemaker_loop(check_interval: int = 10):
+async def pacemaker_loop(check_interval: int = 10, thread_id: str = None):
     """
     后台心脏起搏器协程（带并发锁和循环任务续期功能）
+
+    Args:
+        check_interval: 检查间隔秒数
+        thread_id: 当前会话的 thread_id，用于过滤定时任务
     """
     while True:
         await asyncio.sleep(check_interval)
-        
+
         if not os.path.exists(TASKS_FILE):
             continue
-            
+
         now = datetime.now()
         pending_tasks = []
         triggered_tasks = []
@@ -29,11 +33,17 @@ async def pacemaker_loop(check_interval: int = 10):
                     tasks = json.loads(content)
             except Exception:
                 continue
-                
+
             if not tasks:
                 continue
 
             for t in tasks:
+                # 只处理当前 thread_id 的任务
+                task_thread_id = t.get("thread_id")
+                if thread_id and task_thread_id and task_thread_id != thread_id:
+                    pending_tasks.append(t)
+                    continue
+
                 try:
                     target_dt = datetime.strptime(t["target_time"], "%Y-%m-%d %H:%M:%S")
                     if now >= target_dt:
