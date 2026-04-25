@@ -24,9 +24,8 @@ class TestAgent(unittest.TestCase):
         self.assertEqual(initial_state["summary"], "")
 
     @patch('myclaw.core.provider.get_provider')
-    @patch('myclaw.core.skill_loader.load_dynamic_skills')
-    @patch('myclaw.core.tools.builtins.BUILTIN_TOOLS', [])
-    def test_create_agent_app_basic(self, mock_load_skills, mock_get_provider):
+    @patch('myclaw.core.skill_loader.get_skill_index_text')
+    def test_create_agent_app_basic(self, mock_get_skill_index, mock_get_provider):
         """测试创建基础代理应用（带 Mock）"""
         from myclaw.core.agent import create_agent_app
 
@@ -35,21 +34,19 @@ class TestAgent(unittest.TestCase):
         mock_provider.bind_tools.return_value = Mock()
         mock_get_provider.return_value = mock_provider
 
-        # Mock 动态技能加载
-        mock_load_skills.return_value = []
+        # Mock skill 索引文本
+        mock_get_skill_index.return_value = "当前没有加载任何外部 skill。"
 
         try:
             app = create_agent_app(provider_name="openai", model_name="gpt-4o-mini")
             self.assertIsNotNone(app)
         except Exception as e:
-            # 即使出现其他错误也记录
             print(f"Unexpected error: {e}")
             raise
 
     @patch('myclaw.core.provider.get_provider')
-    @patch('myclaw.core.skill_loader.load_dynamic_skills')
-    @patch('myclaw.core.tools.builtins.BUILTIN_TOOLS', [])
-    def test_create_agent_app_with_custom_tools(self, mock_load_skills, mock_get_provider):
+    @patch('myclaw.core.skill_loader.get_skill_index_text')
+    def test_create_agent_app_with_custom_tools(self, mock_get_skill_index, mock_get_provider):
         """测试创建带有自定义工具的代理应用（带 Mock）"""
         from myclaw.core.agent import create_agent_app
         from langchain_core.tools import tool
@@ -59,8 +56,8 @@ class TestAgent(unittest.TestCase):
         mock_provider.bind_tools.return_value = Mock()
         mock_get_provider.return_value = mock_provider
 
-        # Mock 动态技能加载
-        mock_load_skills.return_value = []
+        # Mock skill 索引文本
+        mock_get_skill_index.return_value = "当前没有加载任何外部 skill。"
 
         # 创建一个真正的 mock 工具（使用@tool 装饰器）
         @tool
@@ -80,9 +77,8 @@ class TestAgent(unittest.TestCase):
             raise
 
     @patch('myclaw.core.provider.get_provider')
-    @patch('myclaw.core.skill_loader.load_dynamic_skills')
-    @patch('myclaw.core.tools.builtins.BUILTIN_TOOLS', [])
-    def test_create_agent_app_with_checkpointer(self, mock_load_skills, mock_get_provider):
+    @patch('myclaw.core.skill_loader.get_skill_index_text')
+    def test_create_agent_app_with_checkpointer(self, mock_get_skill_index, mock_get_provider):
         """测试创建带有检查点的代理应用（带 Mock）"""
         from myclaw.core.agent import create_agent_app
         from langgraph.checkpoint.memory import MemorySaver
@@ -92,8 +88,8 @@ class TestAgent(unittest.TestCase):
         mock_provider.bind_tools.return_value = Mock()
         mock_get_provider.return_value = mock_provider
 
-        # Mock 动态技能加载
-        mock_load_skills.return_value = []
+        # Mock skill 索引文本
+        mock_get_skill_index.return_value = "当前没有加载任何外部 skill。"
 
         memory_saver = MemorySaver()
         try:
