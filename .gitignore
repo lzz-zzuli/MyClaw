@@ -27,3 +27,7 @@ workspace/memory/*.md
 workspace/office
 
 *.egg-info/
+
+logs/
+
+workspace/sessions.json
