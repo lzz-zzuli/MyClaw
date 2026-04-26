@@ -66,6 +66,23 @@ def create_agent_app(
             print_formatted_text(ANSI("\033[K \033[38;5;141m ● 正在更新上下文记忆... \033[0m"))
             discarded_text = "\n".join([f"{m.type}: {m.content}" for m in discarded_msgs if m.content])
 
+            # 先归档被裁剪的消息（在删除前保存）
+            for m in discarded_msgs:
+                if m.content and isinstance(m.content, str):
+                    metadata = {}
+                    if hasattr(m, 'tool_calls') and m.tool_calls:
+                        metadata['tool_calls'] = m.tool_calls
+                    if m.type == 'tool':
+                        metadata['tool_name'] = m.name
+
+                    audit_logger.log_archived_message(
+                        thread_id=thread_id,
+                        message_type=m.type,
+                        message_id=m.id,
+                        content=m.content,
+                        metadata=metadata
+                    )
+
             summary_prompt = (
                     f"你是一个负责维护 AI 工作台上下文的后台模块。\n\n"
                     f"【现有的交接文档】\n{current_summary if current_summary else '暂无记录'}\n\n"

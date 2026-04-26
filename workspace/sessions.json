@@ -2,10 +2,10 @@
   {
     "session_id": "session_20260425_144446",
     "name": "session_20260425_144446",
-    "description": "",
+    "description": "<think>The user is asking me to generate a brief s",
     "created_at": "2026-04-25T06:44:46Z",
-    "updated_at": "2026-04-25T06:45:07Z",
-    "message_count": 1
+    "updated_at": "2026-04-26T08:51:04Z",
+    "message_count": 4
   },
   {
     "session_id": "session_20260425_144608",
@@ -21,6 +21,14 @@
     "description": "<think>用户要求我根据对话内容生成一个简短的会话描述，不超过30字。\n\n对话内容是关于查询天气",
     "created_at": "2026-04-25T06:48:02Z",
     "updated_at": "2026-04-25T07:23:50Z",
+    "message_count": 6
+  },
+  {
+    "session_id": "session_20260426_165107",
+    "name": "session_20260426_165107",
+    "description": "<think>The user is asking me to generate a short s",
+    "created_at": "2026-04-26T08:51:07Z",
+    "updated_at": "2026-04-26T08:54:38Z",
     "message_count": 6
   }
 ]

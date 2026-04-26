@@ -71,4 +71,24 @@ class JSONLEventLogger:
         self.log_queue.put(None)
         self.log_queue.join()
 
+    def log_archived_message(self, thread_id: str, message_type: str, message_id: str, content: str, metadata: dict = None):
+        """
+        归档被裁剪的消息到 JSONL 文件。
+
+        Args:
+            thread_id: 会话 ID
+            message_type: 消息类型 ("human", "ai", "tool")
+            message_id: LangGraph 消息 ID
+            content: 完整消息内容
+            metadata: 额外信息 (tool_name, tool_calls 等)
+        """
+        self.log_event(
+            thread_id=thread_id,
+            event="message_archive",
+            msg_type=message_type,
+            msg_id=message_id,
+            content=content,
+            metadata=metadata or {}
+        )
+
 audit_logger = JSONLEventLogger()

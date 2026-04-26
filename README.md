@@ -20,7 +20,8 @@
 
 MyClaw 是一个**企业级透明可控智能体**，重新定义 AI 系统的可信边界：
 
-- **🔍 白盒化决策** → 5 类事件审计 + JSONL 日志 + Rich 监控终端，所有行为可追溯
+- **🔍 白盒化决策** → 6 类事件审计 + JSONL 日志 + Rich 监控终端，所有行为可追溯
+- **💾 对话归档** → 被裁剪的旧消息完整保存，不丢失任何历史细节
 - **🛡️ 零信任执行** → 两段式调用（help → run），先看说明书再执行，事故率降低 80%
 - **🧠 持续学习** → 双水位记忆系统（长期画像 + 短期摘要），越用越懂你
 - **⚡ 复杂任务编排** → 心跳任务系统 + 可插拔技能，解放双手
@@ -83,7 +84,7 @@ result = app.invoke({"messages": [HumanMessage("你好")]})
 #### 核心特性
 
 - **双水位记忆注入**：长期画像 + 短期摘要自动注入系统提示词
-- **上下文裁剪**：超过阈值自动压缩旧对话，防止 Token 爆炸
+- **上下文裁剪**：超过阈值自动压缩旧对话，归档完整历史，防止 Token 爆炸
 - **审计埋点**：每步决策记录到日志，可追溯
 
 ---
@@ -214,7 +215,7 @@ await pacemaker_loop(check_interval=10)  # 每 10 秒检查
 
 ### 6️⃣ logger.py - 审计日志系统
 
-**记录 Agent 的所有决策过程。**
+**记录 Agent 的所有决策过程 + 对话归档。**
 
 ```python
 from myclaw.core.logger import audit_logger
@@ -226,9 +227,18 @@ audit_logger.log_event(
     tool="read_file",
     args={"filepath": "test.py"}
 )
+
+# 归档被裁剪的消息
+audit_logger.log_archived_message(
+    thread_id="session_1",
+    message_type="human",
+    message_id="msg_001",
+    content="完整的消息内容",
+    metadata={}
+)
 ```
 
-**记录的 5 类事件：**
+**记录的 6 类事件：**
 
 | 事件 | 触发时机 | 记录内容 |
 |------|----------|----------|
@@ -237,11 +247,13 @@ audit_logger.log_event(
 | `tool_result` | 工具执行完毕 | 结果摘要 |
 | `ai_message` | LLM 直接回复 | 回复内容 |
 | `system_action` | 系统操作 | 心跳任务等 |
+| `message_archive` | 上下文裁剪时 | **完整消息归档** |
 
 **日志格式：JSONL（每行一个 JSON）**
 ```bash
 tail -f logs/session_1.jsonl  # 实时监控
 grep "tool_call" logs/*.jsonl  # 搜索工具调用
+grep "message_archive" logs/*.jsonl  # 查看归档消息
 ```
 
 ---
@@ -403,9 +415,29 @@ MyClaw 支持**多会话隔离**，每个会话拥有独立的对话历史、日
 | 文件 | 说明 |
 |------|------|
 | `workspace/sessions.json` | 会话元数据（名称、描述、消息计数） |
-| `workspace/state.sqlite3` | LangGraph 状态持久化（对话历史） |
-| `logs/{session_id}.jsonl` | 每个会话独立的审计日志 |
+| `workspace/state.sqlite3` | LangGraph 状态持久化（最近 10 轮对话 + 摘要） |
+| `logs/{session_id}.jsonl` | 每个会话独立的审计日志 + **对话归档** |
 | `workspace/tasks.json` | 定时任务（按 session_id 分离） |
+
+### 上下文裁剪机制
+
+当对话超过 40 覃时，自动触发裁剪：
+
+```
+对话超过 40 覃
+    ↓
+归档旧消息到 JSONL（完整保存）
+    ↓
+LLM 生成摘要（融合旧摘要 + 旧对话）
+    ↓
+删除 SQLite 中的旧消息
+    ↓
+保留最近 10 覃 + 摘要
+```
+
+**裁剪后数据分布：**
+- `state.sqlite3`: 最近 10 覃对话 + 摘要（LLM 上下文使用）
+- `logs/*.jsonl`: 被裁剪的完整消息（审计/恢复使用）
 
 ### 会话隔离机制
 
@@ -466,7 +498,7 @@ MyClaw/
 │   ├── state.sqlite3          # LangGraph 状态持久化
 │   └── tasks.json             # 定时任务队列
 ├── logs/
-│   └── *.jsonl                # 审计日志（每会话一个文件）
+│   └── *.jsonl                # 审计日志 + 对话归档（每会话一个文件）
 ├── tests/                     # 测试套件
 ├── pyproject.toml             # 项目配置
 └── README.md                  # 说明文档

@@ -12,7 +12,7 @@ myclaw/core/
 ├── skill_loader.py   # Skill 两阶段加载：索引扫描 + 按需加载
 ├── bus.py            # asyncio.Queue 任务队列
 ├── heartbeat.py      # 定时任务心跳检测
-├── logger.py         # 异步 JSONL 日志记录
+├── logger.py         # 异步 JSONL 日志记录 + 消息归档
 └── tools/
     ├── builtins.py   # 内置工具集
     └── base.py       # 工具基类和装饰器
@@ -85,7 +85,7 @@ trigger_words:
 | `workspace/office/` | **安全沙盒** - 唯一允许文件操作的空间 |
 | `workspace/office/skills/` | Skill 卡槽目录 |
 | `workspace/tasks.json` | 定时任务队列 |
-| `logs/` | Agent 行为日志 (JSONL 格式) |
+| `logs/` | Agent 行为日志 + 对话归档 (JSONL 格式) |
 
 ## 环境变量配置
 
@@ -111,9 +111,15 @@ ANTHROPIC_API_KEY=sk-xxx    # 仅 Anthropic 时需要
 - 这是核心安全协议，不可绕过
 
 ### 记忆系统
-- **状态机记忆**: `state.sqlite3` - LangGraph 自动管理
+- **状态机记忆**: `state.sqlite3` - LangGraph 自动管理，保留最近 10 轮对话
+- **对话摘要**: `state.sqlite3` (summary 字段) - 旧对话的压缩摘要，上下文裁剪时生成
+- **对话归档**: `logs/*.jsonl` - 被裁剪的旧消息完整归档，便于审计和恢复
 - **用户画像**: `memory/user_profile.md` - 通过 `save_user_profile` 工具更新
-- **上下文裁剪**: 超过40轮对话自动生成摘要，保留最近10轮
+
+**上下文裁剪机制**：
+```
+对话超过 40 轮 → 归档旧消息到 JSONL → LLM 生成摘要 → 删除旧消息 → 保留最近 10 轮
+```
 
 ### 多模型支持
 通过 `provider.py` 支持多种 LLM：
