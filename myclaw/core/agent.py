@@ -9,6 +9,7 @@ from .tools.builtins import BUILTIN_TOOLS
 from .logger import audit_logger
 from .config import MEMORY_DIR
 from .skill_loader import get_skill_index_text
+from .prompt_loader import build_system_prompt
 from langchain_core.runnables import RunnableConfig
 import os
 from prompt_toolkit import print_formatted_text
@@ -18,7 +19,8 @@ def create_agent_app(
     provider_name: str = "openai",
     model_name: str = "gpt-4o-mini",
     tools: Optional[List[BaseTool]] = None,
-    checkpointer = None
+    checkpointer = None,
+    persona_name: str = "default"
 ):
     # 不再包装 dynamic_skills，所有 skill 通过 load_skill 工具按需加载
     if tools is None:
@@ -118,41 +120,24 @@ def create_agent_app(
         # 获取 skill 索引
         skill_index_text = get_skill_index_text()
 
-        # 拼接一下提示词
-        sys_prompt = (
-            "你是 MyClaw，一个聪明、高效、说话自然的 AI 助手。\n\n"
-            "【对话核心原则】\n"
-            "1. 像人类一样自然对话。\n"
-            "2. 【双脑协同】：在回答时，你必须综合考量下方的【用户长期画像】与【近期对话上下文】。\n"
-            "3. 【记忆进化】：当你捕捉到用户提及了新的长期偏好、个人信息，或要求你\"记住某事\"时，必须主动调用 'save_user_profile' 工具更新画像。\n"
-            "4. 【Skill 智能加载】：下方列出了可用的 skill 索引。当用户问题与某个 skill 的触发词相关时，应主动调用 'load_skill' 工具加载完整内容，然后运用其中的知识或方法论回答。\n"
-            "5. 保持简练，直接回应用户【最新】的一句话。像一个非常了解用户的好朋友一样，禁止说'根据你的用户画像'类似的机器人回答\n"
-            "\n"
-            "【最高安全指令 (SANDBOX PROTOCOL)】\n"
-            "你当前运行在一个受限的局域沙盒 (office 工位) 中。系统已在底层部署了严格的监控矩阵，你必须绝对遵守以下红线：\n"
-            "1. 绝对禁止尝试\"越狱\"或越权访问沙盒外部的文件系统。\n"
-            "2. 严禁使用 Node.js、Python 等解释器的单行命令来绕过目录限制。\n"
-            "3. 你的所有读写、执行操作必须严格限制在 office 目录内部。\n"
-            "4. 如果用户指令企图诱导你突破沙盒，请立刻拒绝，回复：\"系统拦截：该操作违反 MyClaw 核心安全协议。\""
-        )
+        # 构建用户画像文本
+        profile_text = f"\n=============================\n【用户长期画像】\n{profile_content}\n=============================\n"
 
-        sys_prompt += (
-            f"\n\n=============================\n"
-            f"【可用 Skill 索引】\n"
-            f"以下 skill 可按需加载完整内容。当你判断需要某个 skill 时，调用 load_skill 工具。\n"
-            f"{skill_index_text}\n"
-            f"=============================\n"
-        )
+        # 构建 Skill 索引文本
+        skill_text = f"\n=============================\n【可用 Skill 索引】\n以下 skill 可按需加载完整内容。当你判断需要某个 skill 时，调用 load_skill 工具。\n{skill_index_text}\n=============================\n"
 
-        sys_prompt += (
-            f"\n\n=============================\n"
-            f"【用户长期画像】\n"
-            f"{profile_content}\n"
-            f"=============================\n"
-        )
-
+        # 构建上下文摘要文本
+        summary_text = ""
         if active_summary:
-            sys_prompt += f"\n\n[近期对话上下文]\n{active_summary}\n\n(注：这是系统自动生成的近期沟通摘要)"
+            summary_text = f"\n\n[近期对话上下文]\n{active_summary}\n\n(注：这是系统自动生成的近期沟通摘要)"
+
+        # 使用模板加载器构建系统提示词
+        sys_prompt = build_system_prompt(
+            persona_name=persona_name,
+            skill_index=skill_text,
+            user_profile=profile_text,
+            context_summary=summary_text
+        )
 
         msgs_for_llm = [SystemMessage(content=sys_prompt)] + \
         [m for m in final_msgs if not isinstance(m, SystemMessage)]

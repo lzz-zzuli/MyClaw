@@ -85,7 +85,7 @@ def cprint(text="", end="\n"):
     print_formatted_text(ANSI(str(text)), end=end)
 
 
-async def async_main(session_id: str = None, session_name: str = None):
+async def async_main(session_id: str = None, session_name: str = None, persona_name: str = "default"):
     print_banner()
 
     # 设置当前 thread_id 供工具模块使用
@@ -99,7 +99,12 @@ async def async_main(session_id: str = None, session_name: str = None):
     current_model = os.getenv("DEFAULT_MODEL", "glm-5")
 
     async with AsyncSqliteSaver.from_conn_string(DB_PATH) as memory:
-        app = create_agent_app(provider_name=current_provider, model_name=current_model, checkpointer=memory)
+        app = create_agent_app(
+            provider_name=current_provider,
+            model_name=current_model,
+            checkpointer=memory,
+            persona_name=persona_name
+        )
         config = {"configurable": {"thread_id": session_id}}
 
         class SpinnerState:
@@ -268,12 +273,13 @@ async def async_main(session_id: str = None, session_name: str = None):
             # 会话退出时生成描述
             await generate_session_description(app, config, session_id)
 
-def main(resume: str = None, session_name: str = None):
+def main(resume: str = None, session_name: str = None, persona_name: str = "default"):
     """主入口函数
 
     Args:
         resume: 会话名称或 session_id，用于恢复历史会话。空字符串表示显示历史列表
         session_name: 新会话命名或重命名现有会话
+        persona_name: 人设模板名称 (default/professional/friendly/custom)
     """
     # 决定 session_id
     if resume == "":
@@ -348,7 +354,7 @@ def main(resume: str = None, session_name: str = None):
         else:
             print(f"  \033[38;5;51m✦ 新会话已创建: {session_id}\033[0m")
 
-    asyncio.run(async_main(session_id=session_id, session_name=session.get("name") if session else None))
+    asyncio.run(async_main(session_id=session_id, session_name=session.get("name") if session else None, persona_name=persona_name))
 
 
 async def generate_session_description(app, config, session_id: str):

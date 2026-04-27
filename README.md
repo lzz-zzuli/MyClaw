@@ -44,7 +44,13 @@ myclaw/core/
 ├── heartbeat.py      # 心跳任务引擎
 ├── logger.py         # 审计日志系统
 ├── skill_loader.py   # 动态技能加载器
+├── prompt_loader.py  # 人设模板加载器
 ├── config.py         # 配置管理
+├── prompts/          # 人设模板目录
+│   ├── default.md    # 默认人设
+│   ├── professional.md # 专业助手
+│   ├── friendly.md   # 友好助手
+│   └── custom.md     # 用户自定义
 └── tools/
     ├── base.py       # 工具装饰器 + thread_id 管理
     ├── builtins.py   # 内置工具集
@@ -88,6 +94,7 @@ result = app.invoke({"messages": [HumanMessage("你好")]})
 - **双水位记忆注入**：长期画像 + 短期摘要自动注入系统提示词
 - **上下文裁剪**：超过阈值自动压缩旧对话，归档完整历史，防止 Token 爆炸
 - **审计埋点**：每步决策记录到日志，可追溯
+- **多人设支持**：通过 `-p` 参数切换不同人设模板（默认/专业/友好/自定义）
 
 ---
 
@@ -422,12 +429,30 @@ myclaw config
 ### 3️⃣ 运行
 
 ```bash
-# 启动主程序（创建新会话）
+# 启动主程序（创建新会话，默认人设）
 myclaw run
+
+# 使用专业人设启动
+myclaw run -p professional
+
+# 使用友好人设启动
+myclaw run -p friendly
+
+# 使用自定义人设启动
+myclaw run -p custom
 
 # 启动监控终端（另一个终端）
 myclaw monitor
 ```
+
+### 4️⃣ 可用人设
+
+| 人设 | 参数 | 特点 |
+|------|------|------|
+| default | `-p default` | 聪明、高效、自然（原默认行为） |
+| professional | `-p professional` | 精准、严谨、结构化技术顾问 |
+| friendly | `-p friendly` | 温暖、耐心、亲切生活伙伴 |
+| custom | `-p custom` | 用户自定义（编辑 prompts/custom.md） |
 
 ---
 
@@ -488,7 +513,9 @@ LLM 生成摘要（融合旧摘要 + 旧对话）
 
 | 类型 | 命令示例 | 说明 |
 |------|----------|------|
-| 🆕 新会话 | `myclaw run` | 创建新会话 |
+| 🆕 新会话 | `myclaw run` | 创建新会话（默认人设） |
+| 🎭 专业人设 | `myclaw run -p professional` | 精准严谨的技术顾问 |
+| 🤝 友好人设 | `myclaw run -p friendly` | 温暖亲切的生活伙伴 |
 | 📋 会话列表 | `myclaw run -l` | 显示历史会话 |
 | 🔙 恢复会话 | `myclaw run -r "工作助手"` | 恢复指定会话 |
 | ✏️ 重命名 | `/rename 项目讨论` | 重命名当前会话 |
@@ -518,6 +545,12 @@ MyClaw/
 │       ├── heartbeat.py       # 心跳引擎
 │       ├── logger.py          # 审计日志
 │       ├── skill_loader.py    # 技能加载
+│       ├── prompt_loader.py   # 人设模板加载器
+│       ├── prompts/           # 人设模板目录
+│       │   ├── default.md     # 默认人设
+│       │   ├── professional.md # 专业助手
+│       │   ├── friendly.md    # 友好助手
+│       │   └── custom.md      # 用户自定义
 │       └── tools/
 │           ├── builtins.py    # 内置工具
 │           └── sandbox_tools.py  # 沙盒工具

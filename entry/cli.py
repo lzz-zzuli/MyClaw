@@ -168,7 +168,8 @@ def _show_boot_error():
 def run_agent(
     resume: str = typer.Option(None, "-r", "--resume", help="恢复指定会话名称"),
     list_sessions: bool = typer.Option(False, "-l", "--list", help="显示历史会话列表"),
-    name: str = typer.Option(None, "-n", "--name", help="命名新会话或重命名现有会话")
+    name: str = typer.Option(None, "-n", "--name", help="命名新会话或重命名现有会话"),
+    persona: str = typer.Option("default", "-p", "--persona", help="选择人设模板 (default/professional/friendly/custom)")
 ):
     load_dotenv(ENV_PATH)
     provider = os.getenv("DEFAULT_PROVIDER")
@@ -190,9 +191,9 @@ def run_agent(
     import entry.main as myclaw_main
     # 如果指定了 --list，则传入空字符串触发列表显示
     if list_sessions:
-        myclaw_main.main(resume="", session_name=name)
+        myclaw_main.main(resume="", session_name=name, persona_name=persona)
     else:
-        myclaw_main.main(resume=resume, session_name=name)
+        myclaw_main.main(resume=resume, session_name=name, persona_name=persona)
 
 @app.command("monitor")
 def run_monitor():    
