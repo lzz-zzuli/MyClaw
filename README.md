@@ -2,252 +2,222 @@
 
 # MyClaw
 
-### **当 AI 开始"黑箱操作"，你需要一双透视眼**
+### 基于 LangGraph 的透明可控智能体框架
 
-**下一代透明智能体架构** · Next-Gen Transparent Agent Architecture
+**Transparent & Controllable Agent Architecture** · Built with LangGraph
 
-[快速开始](#-快速开始) · [核心模块](#-核心模块) · [内置工具](#-内置工具)
+[快速开始](#快速开始) · [核心模块](#核心模块) · [安全沙盒](#安全沙盒)
 
 </div>
 
 ---
 
-> 🤖 **你的 AI 在背着你做什么？MyClaw 让所有行为无所遁形**
-> 
-> 🛡️ **安全已加固**：计算器采用 AST 白名单，沙盒实现符号链接防御、环境隔离、41 个危险命令黑名单
+> **让你的 AI 行为透明可控**
+>
+> 完整审计日志 + 安全沙盒 + 对话归档 + 多会话管理
 
 ---
 
-## 📖 简介
 
-MyClaw 是一个**企业级透明可控智能体**，重新定义 AI 系统的可信边界：
+## 简介
 
-- **🔍 白盒化决策** → 6 类事件审计 + JSONL 日志 + Rich 监控终端，所有行为可追溯
-- **💾 对话归档** → 被裁剪的旧消息完整保存，不丢失任何历史细节
-- **🛡️ 零信任执行** → 两段式调用（help → run）+ **安全沙盒加固**（AST 计算器 + 环境隔离 + 命令黑名单），事故率降低 80%
-- **🧠 持续学习** → 双水位记忆系统（长期画像 + 短期摘要），越用越懂你
-- **⚡ 复杂任务编排** → 心跳任务系统 + 可插拔技能，解放双手
+MyClaw 是一个基于 LangGraph 状态机的 AI Agent 框架，提供 REPL 交互式智能终端体验。
+
+### 核心特性
+
+- **状态机驱动** - LangGraph 构建决策循环，每步可追溯
+- **多模型适配** - 支持 OpenAI、Anthropic、阿里云、Z.AI、腾讯、Ollama 等
+- **安全沙盒** - AST 白名单计算器 + 符号链接防御 + 环境隔离 + 命令黑名单
+- **上下文裁剪** - 超过阈值自动压缩，归档完整历史到 JSONL
+- **多会话管理** - 独立会话 ID、命名、描述、消息计数
+- **多人设模板** - default/professional/friendly/custom 四种人设
+- **动态技能** - 两阶段加载：索引扫描 + 按需加载
+- **心跳任务** - 后台定时任务引擎，支持 hourly/daily/weekly 循环
+- **审计日志** - 6 类事件 JSONL 记录，支持实时监控
 
 ---
 
-## 🏗️ 核心模块
+## 核心模块
 
-### 📦 模块概览
+### 模块结构
 
 ```
 myclaw/core/
-├── agent.py          # Agent 决策引擎（LangGraph 状态图）
-├── context.py        # 上下文裁剪 + 状态定义
-├── provider.py       # 多模型提供商适配器
-├── session.py        # 多会话管理（元数据 + 命名）
-├── bus.py            # 异步任务队列总线
+├── agent.py          # LangGraph 状态机（核心决策引擎）
+├── context.py        # AgentState 状态定义 + 上下文裁剪
+├── provider.py       # 多模型适配工厂
+├── session.py        # 会话元数据管理器（单例）
+├── bus.py            # asyncio.Queue 任务队列
 ├── heartbeat.py      # 心跳任务引擎
-├── logger.py         # 审计日志系统
-├── skill_loader.py   # 动态技能加载器
+├── logger.py         # 异步 JSONL 日志 + 消息归档
+├── skill_loader.py   # 两阶段技能加载器
 ├── prompt_loader.py  # 人设模板加载器
-├── config.py         # 配置管理
+├── config.py         # 运行时路径配置
 ├── prompts/          # 人设模板目录
 │   ├── default.md    # 默认人设
-│   ├── professional.md # 专业助手
-│   ├── friendly.md   # 友好助手
-│   └── custom.md     # 用户自定义
+│   ├── professional.md
+│   ├── friendly.md
+│   └── custom.md
 └── tools/
-    ├── base.py       # 工具装饰器 + thread_id 管理
-    ├── builtins.py   # 内置工具集
+    ├── base.py       # @my_tool 装饰器 + thread_id 管理
+    ├── builtins.py   # 内置工具集（12 个）
     └── sandbox_tools.py  # 沙盒安全工具
 ```
 
----
-
-### 1️⃣ agent.py - Agent 决策引擎
-
-**核心大脑，使用 LangGraph 构建状态循环。**
-
-#### 工作流程
+### LangGraph 状态机流转
 
 ```
-用户输入 → agent_node (LLM决策) → tools_condition (判断是否调用工具)
-                                        ↓ 是                    ↓ 否
-                                   tool_node (执行)              END
-                                        ↓
-                                   agent_node (继续决策)
+START → agent_node → tools_condition
+                           ↓ 有 tool_call → tools → agent_node
+                           ↓ 无 tool_call → END
 ```
 
-#### 关键函数
+**agent_node 核心逻辑**：
 
-```python
-from myclaw.core.agent import create_agent_app
-
-# 创建 Agent 应用
-app = create_agent_app(
-    provider_name="openai",      # 模型提供商
-    model_name="gpt-4o-mini",    # 模型名称
-    checkpointer=memory          # 记忆存储
-)
-
-# 运行 Agent
-result = app.invoke({"messages": [HumanMessage("你好")]})
-```
-
-#### 核心特性
-
-- **双水位记忆注入**：长期画像 + 短期摘要自动注入系统提示词
-- **上下文裁剪**：超过阈值自动压缩旧对话，归档完整历史，防止 Token 爆炸
-- **审计埋点**：每步决策记录到日志，可追溯
-- **多人设支持**：通过 `-p` 参数切换不同人设模板（默认/专业/友好/自定义）
+1. 记录工具执行结果到日志
+2. 上下文裁剪（超过 40 轮触发）
+3. 归档被裁剪消息到 JSONL
+4. LLM 生成融合摘要
+5. 注入用户画像 + Skill 索引 + 摘要
+6. 调用 LLM 决策
+7. 记录 tool_call / ai_message 到日志
 
 ---
 
-### 2️⃣ context.py - 上下文管理
+## 安全沙盒
 
-**管理对话状态和历史裁剪。**
+### sandbox_tools.py 安全防御
 
-#### 状态定义
+| 防御措施 | 实现方式 | 说明 |
+|----------|----------|------|
+| AST 白名单计算器 | `ast.parse` + `_SAFE_OPERATORS` 映射 | 替换 `eval()`，只允许数字和数学运算符 |
+| 符号链接防御 | `os.path.realpath()` 解析真实路径 | 防止 `ln -s` 绕过沙盒边界 |
+| 环境变量隔离 | `_SAFE_ENV_WHITELIST` 白名单 | 子进程只能访问 PATH/HOME/LANG，API Key 不可见 |
+| 危险命令黑名单 | 41 个命令拦截 | curl/wget/python/ssh/sudo/kill 等 |
+| 路径越权拦截 | `_DANGEROUS_PATH_PATTERNS` 正则 | ../、/、~、\、盘符全部拦截 |
+| 超时熔断 | `subprocess.run(timeout=60)` | 命令执行 60 秒后强制终止 |
+| 输出截断 | 2000 字符截断 | 防止 Token 爆炸 |
 
-```python
-from myclaw.core.context import AgentState
 
-state = AgentState(
-    messages=[],     # 对话历史（自动累积）
-    summary=""       # 上下文摘要
-)
-```
-
-#### 上下文裁剪
-
-```python
-from myclaw.core.context import trim_context_messages
-
-# 按回合裁剪，保证工具调用链完整
-final_msgs, discarded_msgs = trim_context_messages(
-    messages,
-    trigger_turns=40,  # 超过 40 回合触发裁剪
-    keep_turns=10      # 保留最近 10 回合
-)
-```
-
-**裁剪逻辑：**
-```
-回合 1: HumanMessage → AIMessage → ToolMessage → AIMessage
-        ↑ 整个回合要么全保留，要么全丢弃（保证完整性）
-```
 
 ---
 
-### 3️⃣ provider.py - 多模型适配器
+## 内置工具
 
-**统一接口，支持多家 LLM 提供商。**
+| 工具 | 功能 | 安全级别 |
+|------|------|----------|
+| `get_current_time` | 获取系统时间 | 安全 |
+| `calculator` | 数学计算 | AST 白名单 |
+| `schedule_task` | 创建定时任务 | 安全 |
+| `list_scheduled_tasks` | 查看任务列表 | 安全 |
+| `delete_scheduled_task` | 删除任务 | 需确认 |
+| `modify_scheduled_task` | 修改任务 | 需确认 |
+| `save_user_profile` | 更新用户画像 | 安全 |
+| `get_system_model_info` | 获取模型信息 | 安全 |
+| `load_skill` | 加载技能内容 | 安全 |
+| `list_office_files` | 列出沙盒文件 | 符号链接防御 |
+| `read_office_file` | 读取沙盒文件 | 符号链接防御 |
+| `write_office_file` | 写入沙盒文件 | 符号链接防御 |
+| `execute_office_shell` | 执行 Shell | 环境隔离 + 黑名单 |
 
-#### 支持的提供商
+---
 
-| 提供商 | 使用接口 |
-|--------|----------|
-| OpenAI | 原生 OpenAI API |
-| Anthropic | 原生 Anthropic API |
-| 阿里云、腾讯、Z.AI | OpenAI 兼容接口 |
-| Ollama | 本地部署 |
-| 其他 OpenAI 兼容 | 自定义 Base URL |
+## 快速开始
 
-#### 使用方式
+### 安装
 
-```python
-from myclaw.core.provider import get_provider
+```bash
+git clone https://github.com/your-repo/MyClaw.git
+cd MyClaw
 
-# OpenAI
-llm = get_provider(provider_name="openai", model_name="gpt-4o-mini")
+# 使用 uv（推荐）
+uv sync
 
-# 阿里云（兼容接口）
-llm = get_provider(provider_name="aliyun", model_name="qwen-max")
+# 或 pip
+pip install -e .
+```
 
-# Ollama 本地
-llm = get_provider(provider_name="ollama", model_name="llama3")
+### 配置
 
-# 自定义兼容接口
-llm = get_provider(
-    provider_name="other",
-    model_name="custom-model",
-    base_url="https://your-api.com/v1",
-    api_key="your-key"
-)
+```bash
+myclaw config
+```
+
+交互式配置向导：
+1. 选择提供商（OpenAI / Anthropic / 阿里云 / Z.AI / Ollama 等）
+2. 输入 API Key
+3. 配置 Base URL（可选）
+4. 自动测试连接
+
+### 运行
+
+```bash
+# 创建新会话（默认人设）
+myclaw run
+
+# 专业人设
+myclaw run -p professional
+
+# 友好人设
+myclaw run -p friendly
+
+# 查看历史会话
+myclaw run -l
+
+# 恢复指定会话
+myclaw run -r "会话名称"
+
+# 命名新会话
+myclaw run -n "工作助手"
 ```
 
 ---
 
-### 4️⃣ bus.py - 异步任务总线
+## 会话管理
 
-**解耦用户输入和 Agent 处理。**
+### 会话数据存储
 
-```python
-from myclaw.core.bus import task_queue, emit_task
+| 文件 | 说明 |
+|------|------|
+| `workspace/sessions.json` | 会话元数据（名称、描述、消息计数） |
+| `workspace/state.sqlite3` | LangGraph 状态持久化（最近 10 轮 + 摘要） |
+| `logs/{session_id}.jsonl` | 审计日志 + 对话归档 |
+| `workspace/tasks.json` | 定时任务（按 session_id 分离） |
 
-# 放入任务（不阻塞）
-await emit_task("帮我查天气")
+### 会话命令
 
-# 消费任务（Agent 工作循环）
-user_input = await task_queue.get()
-task_queue.task_done()  # 标记完成
-```
-
-**设计目的：**
-- 用户输入和 Agent 处理并行运行
-- 任务排队，不阻塞 UI
-- 支持优雅退出（等待队列清空）
+| 命令 | 说明 |
+|------|------|
+| `/rename 新名字` | 重命名当前会话 |
+| `/exit` | 退出并生成会话描述 |
 
 ---
 
-### 5️⃣ heartbeat.py - 心跳任务引擎
+## 上下文裁剪机制
 
-**后台自动触发定时任务。**
+### 裁剪逻辑
 
-```python
-from myclaw.core.heartbeat import pacemaker_loop
-
-# 启动心跳协程（后台运行）
-await pacemaker_loop(check_interval=10)  # 每 10 秒检查
 ```
-
-**任务执行流程：**
-```
-每 10s 检查 tasks.json
+对话超过 40 覃
     ↓
-发现到期任务 → 放入 task_queue → Agent 自动执行
+归档旧消息到 JSONL（完整保存）
     ↓
-循环任务 → 更新下次触发时间 → 继续等待
+LLM 生成融合摘要（旧摘要 + 旧对话）
+    ↓
+从 SQLite 删除旧消息
+    ↓
+保留最近 10 覃 + 摘要
 ```
 
-**支持的循环模式：**
-- `hourly` - 每小时
-- `daily` - 每天
-- `weekly` - 每周
+### 覃完整性保证
+
+每个用户回合以 HumanMessage 开始，包含后续 AIMessage、ToolMessage，整体保留或丢弃。
 
 ---
 
-### 6️⃣ logger.py - 审计日志系统
+## 审计日志
 
-**记录 Agent 的所有决策过程 + 对话归档。**
-
-```python
-from myclaw.core.logger import audit_logger
-
-# 记录事件
-audit_logger.log_event(
-    thread_id="session_1",
-    event="tool_call",
-    tool="read_file",
-    args={"filepath": "test.py"}
-)
-
-# 归档被裁剪的消息
-audit_logger.log_archived_message(
-    thread_id="session_1",
-    message_type="human",
-    message_id="msg_001",
-    content="完整的消息内容",
-    metadata={}
-)
-```
-
-**记录的 6 类事件：**
+### 6 类事件
 
 | 事件 | 触发时机 | 记录内容 |
 |------|----------|----------|
@@ -256,355 +226,188 @@ audit_logger.log_archived_message(
 | `tool_result` | 工具执行完毕 | 结果摘要 |
 | `ai_message` | LLM 直接回复 | 回复内容 |
 | `system_action` | 系统操作 | 心跳任务等 |
-| `message_archive` | 上下文裁剪时 | **完整消息归档** |
+| `message_archive` | 上下文裁剪时 | 完整消息归档 |
 
-**日志格式：JSONL（每行一个 JSON）**
-```bash
-tail -f logs/session_1.jsonl  # 实时监控
-grep "tool_call" logs/*.jsonl  # 搜索工具调用
-grep "message_archive" logs/*.jsonl  # 查看归档消息
-```
+### 日志格式
+
+JSONL（每行一个 JSON），支持 `tail -f` 实时监控。
 
 ---
 
-### 7️⃣ skill_loader.py - 动态技能加载
+## 多模型适配
 
-**自动扫描并加载可插拔技能。**
+### provider.py 支持的提供商
 
-```python
-from myclaw.core.skill_loader import load_dynamic_skills
+| 提供商 | 接口 |
+|--------|------|
+| OpenAI | 原生 OpenAI API |
+| Anthropic | 原生 Anthropic API |
+| 阿里云 | OpenAI 兼容 |
+| Z.AI (GLM) | OpenAI 兼容 |
+| 腾讯混元 | OpenAI 兼容 |
+| Minimax | OpenAI 兼容 |
+| Ollama | 本地部署 |
+| 其他 | 自定义 Base URL |
 
-# 加载 skills/ 目录下的所有技能
-tools = load_dynamic_skills()
-```
+---
 
-**两段式调用机制：**
+## 动态技能系统
 
-```
-用户: "帮我查北京天气"
-    ↓
-LLM: 调用 weather 技能，mode='help'  ← 先看说明书
-    ↓
-LLM: 看完说明书，决定调用 mode='run'，command="wttr.in Beijing"
-    ↓
-执行底层脚本 → 返回结果
-```
+### 两阶段加载
 
-**SKILL.md 格式：**
+**阶段一：索引扫描**
+- 扫描 `workspace/office/skills/` 目录
+- 解析 SKILL.md frontmatter
+- 提取 name、description、trigger_words
+- 注入 System Prompt
+
+**阶段二：按需加载**
+- LLM 判断用户问题与 skill 触发词相关
+- 调用 `load_skill` 工具
+- 返回完整 SKILL.md 内容
+
+### SKILL.md 格式
+
 ```markdown
 ---
 name: weather
 description: 获取天气预报
+trigger_words:
+  exact: [天气]
+  fuzzy: [气温, 气象]
 ---
-
-# Weather Skill
 
 ## 功能
-获取全球城市的实时天气预报。
-
-## 命令示例
-curl "wttr.in/Beijing?format=3"
+获取全球城市天气预报...
 ```
 
 ---
 
-### 8️⃣ tools/sandbox_tools.py - 沙盒安全工具
+## 心跳任务引擎
 
-**受限环境中的文件操作和 Shell 执行。**
-
-#### 三大沙盒工具
-
-```python
-from myclaw.core.tools.sandbox_tools import (
-    list_office_files,    # 列出文件
-    read_office_file,     # 读取文件
-    write_office_file,    # 写入文件
-    execute_office_shell  # 执行 Shell 命令
-)
-
-# 列出文件
-list_office_files("skills/")
-
-# 读取文件（自动截断超长内容）
-read_office_file("test.py")
-
-# 写入文件（支持覆盖/追加）
-write_office_file("output.txt", "内容", mode="w")
-
-# 执行 Shell（受限）
-execute_office_shell("python test.py")
-```
-
-#### 安全防御（2026-04 安全加固）
-
-| 防御措施 | 说明 | 状态 |
-|----------|------|------|
-| **AST 白名单计算器** | 替换 `eval()`，只允许数字和数学运算符 | ✅ 已修复 |
-| **符号链接防御** | `realpath()` 解析真实路径，防止 `ln -s` 绕过 | ✅ 已修复 |
-| **环境变量隔离** | 白名单机制，API Key 等敏感信息不可访问 | ✅ 已修复 |
-| **危险命令黑名单** | 拦截 41 个危险命令（curl/python/sudo 等） | ✅ 已修复 |
-| 路径越权拦截 | 所有操作限制在 `workspace/office/` | ✅ 原有 |
-| 五重正则拦截 | `../`、`/`、`~`、`\`、盘符全拦截 | ✅ 原有 |
-| 超时熔断 | 命令执行 60 秒后强制终止 | ✅ 原有 |
-| 输出截断 | 防止 Token 爆炸 | ✅ 原有 |
-
-#### 详细安全说明
-
-**计算器安全实现**：
-```python
-# 只允许：数字、加减乘除、幂、模、括号、正负号
-# 拒绝：函数调用、属性访问、字符串、lambda 等
-calculator("2 ** 10")      # ✅ 正常执行 → 1024
-calculator("__import__")   # ❌ 已拦截 → 禁止的表达式类型
-```
-
-**沙盒环境隔离**：
-```python
-# 子进程只能访问白名单环境变量
-_SAFE_ENV_WHITELIST = {
-    "PATH": ...,
-    "HOME": OFFICE_DIR,     # 强制指向沙盒，非真实 HOME
-    "USER": "myclaw_sandbox",
-    ...
-}
-# OPENAI_API_KEY 等敏感变量不可见
-```
-
-**危险命令拦截示例**：
-```python
-execute_office_shell("curl http://evil.com")  # ❌ 权限拒绝
-execute_office_shell("python -c '...'")       # ❌ 权限拒绝
-execute_office_shell("env")                   # ❌ 权限拒绝（防环境泄露）
-execute_office_shell("ls")                    # ✅ 正常执行
-```
-
----
-
-## 🔧 内置工具
-
-| 工具 | 功能 | 安全说明 | 示例 |
-|------|------|----------|------|
-| `get_current_time` | 获取当前时间 | 安全 | "现在几点了？" |
-| `calculator` | 数学计算器 | **AST 白名单**，无 `eval` 风险 | "25 乘以 48 等于多少" |
-| `schedule_task` | 创建定时任务 | 安全 | "每天早上 8 点提醒我喝水" |
-| `list_scheduled_tasks` | 查看任务列表 | 安全 | "我都有哪些任务" |
-| `delete_scheduled_task` | 删除任务 | 需确认（防误删） | "取消明天的会议提醒" |
-| `save_user_profile` | 更新用户画像 | 安全 | "记住我喜欢喝冰美式" |
-| `list_office_files` | 列出文件 | **符号链接防御** | "看看 office 里有什么" |
-| `read_office_file` | 读取文件 | **符号链接防御** | "读取 readme.txt" |
-| `write_office_file` | 写入文件 | **符号链接防御** | "创建 test.py" |
-| `execute_office_shell` | 执行 Shell | **环境隔离 + 命令黑名单** | "运行 python test.py" |
-
----
-
-## 🚀 快速开始
-
-### 1️⃣ 安装
-
-```bash
-# 克隆项目
-git clone https://github.com/your-repo/MyClaw.git
-cd MyClaw
-
-# 使用 uv 安装（推荐）
-uv sync
-
-# 或使用 pip
-pip install -e .
-```
-
-### 2️⃣ 配置
-
-```bash
-# 启动交互式配置向导
-myclaw config
-```
-
-配置向导会引导你：
-1. 选择模型提供商（OpenAI / Anthropic / 阿里云 / Ollama 等）
-2. 输入 API Key
-3. 配置 Base URL（可选）
-4. 自动测试连接
-
-### 3️⃣ 运行
-
-```bash
-# 启动主程序（创建新会话，默认人设）
-myclaw run
-
-# 使用专业人设启动
-myclaw run -p professional
-
-# 使用友好人设启动
-myclaw run -p friendly
-
-# 使用自定义人设启动
-myclaw run -p custom
-
-# 启动监控终端（另一个终端）
-myclaw monitor
-```
-
-### 4️⃣ 可用人设
-
-| 人设 | 参数 | 特点 |
-|------|------|------|
-| default | `-p default` | 聪明、高效、自然（原默认行为） |
-| professional | `-p professional` | 精准、严谨、结构化技术顾问 |
-| friendly | `-p friendly` | 温暖、耐心、亲切生活伙伴 |
-| custom | `-p custom` | 用户自定义（编辑 prompts/custom.md） |
-
----
-
-## 📂 会话管理
-
-MyClaw 支持**多会话隔离**，每个会话拥有独立的对话历史、日志和定时任务。
-
-### 会话操作
-
-| 命令 | 说明 |
-|------|------|
-| `myclaw run` | 创建新会话（自动生成 session_id） |
-| `myclaw run -n "工作助手"` | 创建新会话并命名 |
-| `myclaw run -l` | 显示历史会话列表（交互选择） |
-| `myclaw run -r "会话名称"` | 恢复指定会话 |
-| `/rename 新名字` | 在会话内重命名当前会话 |
-| `/exit` | 退出当前会话（自动生成会话描述） |
-
-### 会话数据存储
-
-| 文件 | 说明 |
-|------|------|
-| `workspace/sessions.json` | 会话元数据（名称、描述、消息计数） |
-| `workspace/state.sqlite3` | LangGraph 状态持久化（最近 10 轮对话 + 摘要） |
-| `logs/{session_id}.jsonl` | 每个会话独立的审计日志 + **对话归档** |
-| `workspace/tasks.json` | 定时任务（按 session_id 分离） |
-
-### 上下文裁剪机制
-
-当对话超过 40 覃时，自动触发裁剪：
+### pacemaker_loop
 
 ```
-对话超过 40 覃
+每 10s 检查 tasks.json
     ↓
-归档旧消息到 JSONL（完整保存）
+发现到期任务 → 放入 task_queue
     ↓
-LLM 生成摘要（融合旧摘要 + 旧对话）
+Agent 自动执行提醒或动作
     ↓
-删除 SQLite 中的旧消息
-    ↓
-保留最近 10 覃 + 摘要
+循环任务 → 更新下次触发时间
 ```
 
-**裁剪后数据分布：**
-- `state.sqlite3`: 最近 10 覃对话 + 摘要（LLM 上下文使用）
-- `logs/*.jsonl`: 被裁剪的完整消息（审计/恢复使用）
+### 支持的循环模式
 
-### 会话隔离机制
-
-- **对话历史**：每个会话独立的 SQLite checkpoint
-- **定时任务**：仅显示/触发当前会话的任务
-- **审计日志**：每个会话独立 JSONL 文件
-- **用户画像**：全局共享（所有会话可见）
+- `hourly` - 每小时
+- `daily` - 每天
+- `weekly` - 每周
 
 ---
 
-## 📊 常用命令示例
+## 人设模板系统
 
-| 类型 | 命令示例 | 说明 |
-|------|----------|------|
-| 🆕 新会话 | `myclaw run` | 创建新会话（默认人设） |
-| 🎭 专业人设 | `myclaw run -p professional` | 精准严谨的技术顾问 |
-| 🤝 友好人设 | `myclaw run -p friendly` | 温暖亲切的生活伙伴 |
-| 📋 会话列表 | `myclaw run -l` | 显示历史会话 |
-| 🔙 恢复会话 | `myclaw run -r "工作助手"` | 恢复指定会话 |
-| ✏️ 重命名 | `/rename 项目讨论` | 重命名当前会话 |
-| ⏰ 时间查询 | `现在几点了？` | 获取当前时间 |
-| 🧮 数学计算 | `帮我算一下 25 乘以 48` | 调用计算器 |
-| ⏲️ 定时任务 | `每天早上 8 点提醒我喝水` | 创建循环任务 |
-| 📋 查看任务 | `我都有哪些任务` | 查看任务列表 |
-| 📁 文件操作 | `看看 office 里有什么文件` | 列出工位文件 |
-| 📖 读取文件 | `读取 readme.txt` | 读取文件内容 |
-| 📝 创建文件 | `创建 test.py` | 写入新文件 |
-| 💻 Shell | `运行 python test.py` | 执行命令 |
-| 🚪 退出 | `/exit` | 退出程序 |
+### prompt_loader.py
+
+通过 YAML frontmatter 定义人设元数据：
+
+```markdown
+---
+name: professional
+description: 精准严谨的技术顾问
+language: zh-CN
+---
+```
+
+### 占位符替换
+
+- `{{SKILL_INDEX}}` → Skill 索引文本
+- `{{USER_PROFILE}}` → 用户画像
+- `{{CONTEXT_SUMMARY}}` → 近期对话摘要
 
 ---
 
-## 🏢 项目结构
+## 项目结构
 
 ```
 MyClaw/
-├── myclaw/                    # 核心包
-│   └── core/
-│       ├── agent.py           # Agent 决策引擎
-│       ├── context.py         # 上下文裁剪
-│       ├── provider.py        # 多模型适配
-│       ├── session.py         # 会话管理
-│       ├── bus.py             # 任务总线
-│       ├── heartbeat.py       # 心跳引擎
-│       ├── logger.py          # 审计日志
-│       ├── skill_loader.py    # 技能加载
-│       ├── prompt_loader.py   # 人设模板加载器
-│       ├── prompts/           # 人设模板目录
-│       │   ├── default.md     # 默认人设
-│       │   ├── professional.md # 专业助手
-│       │   ├── friendly.md    # 友好助手
-│       │   └── custom.md      # 用户自定义
-│       └── tools/
-│           ├── builtins.py    # 内置工具
-│           └── sandbox_tools.py  # 沙盒工具
+├── myclaw/core/           # 核心模块
 ├── entry/
-│   ├── cli.py                 # 命令行入口
-│   ├── main.py                # 主程序入口
-│   └── monitor.py             # 监控终端
+│   ├── cli.py             # Typer CLI 入口
+│   ├── main.py            # REPL 主程序
+│   └── monitor.py         # 监控终端
 ├── workspace/
-│   ├── office/                # 沙盒工位
-│   │   └── skills/            # 可插拔技能
-│   ├── memory/
-│   │   └── user_profile.md    # 用户画像
-│   ├── sessions.json          # 会话元数据
-│   ├── state.sqlite3          # LangGraph 状态持久化
-│   └── tasks.json             # 定时任务队列
-├── logs/
-│   └── *.jsonl                # 审计日志 + 对话归档（每会话一个文件）
-├── tests/                     # 测试套件
-├── pyproject.toml             # 项目配置
-└── README.md                  # 说明文档
+│   ├── office/            # 安全沙盒
+│   │   └── skills/        # 技能卡槽
+│   ├── memory/            # 用户画像
+│   ├── sessions.json      # 会话元数据
+│   ├── state.sqlite3      # LangGraph 状态
+│   └── tasks.json         # 定时任务
+├── logs/                  # JSONL 日志
+├── tests/                 # 测试套件
+├── pyproject.toml
+└── .env                   # 环境配置
 ```
 
 ---
 
-## 🤝 贡献指南
+## 环境配置
 
-欢迎提交 Issue 和 Pull Request！
-
-### 开发环境
+### .env 示例
 
 ```bash
-# 克隆项目
-git clone https://github.com/your-repo/MyClaw.git
-cd MyClaw
+DEFAULT_PROVIDER=aliyun
+DEFAULT_MODEL=glm-5
 
-# 创建虚拟环境
-python3 -m venv venv
-source venv/bin/activate
-
-# 安装开发依赖
-pip install -e ".[dev]"
+OPENAI_API_KEY=sk-xxx      # OpenAI 兼容接口
+ANTHROPIC_API_KEY=sk-xxx   # Anthropic 原生
 ```
-
-### 提交规范
-
-- `feat:` 新功能
-- `fix:` 修复 bug
-- `docs:` 文档更新
-- `refactor:` 重构
-- `test:` 测试相关
 
 ---
 
-## 📄 许可证
+## 开发指南
+
+### 添加新工具
+
+在 `myclaw/core/tools/builtins.py` 中：
+
+```python
+from .base import my_tool
+
+@my_tool
+def my_tool(arg: str) -> str:
+    """工具描述"""
+    return "结果"
+
+BUILTIN_TOOLS.append(my_tool)
+```
+
+### 开发依赖
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+---
+
+## 致谢
+
+本项目基于 [CyberClaw](https://github.com/ttguy0707/CyberClaw) 二次开发，感谢原作者的开源贡献。
+
+MyClaw 在原有基础上新增/优化了以下特性：
+
+- **多人设模板系统** - default/professional/friendly/custom 四种人设，通过 `-p` 参数切换
+- **会话管理机制** - 支持重命名、退出并生成描述、查看历史会话、恢复指定会话
+- **skill动态加载机制** - 通过 SKILL.md 定义技能，按需加载
+- **符号链接防御** - `realpath()` 解析真实路径，防止 `ln -s` 绕过沙盒
+- **环境变量隔离** - 白名单机制，API Key 等敏感信息不可被沙盒访问
+- **危险命令黑名单扩展** - 从原有拦截扩展至 41 个危险命令
+- **对话归档机制** - 被裁剪的旧消息完整保存到 JSONL，便于审计和恢复
+- **AST 白名单计算器** - 替换 `eval()`，彻底消除代码注入风险
+
+---
+## 许可证
 
 MIT License
 
@@ -612,6 +415,6 @@ MIT License
 
 <div align="center">
 
-**👾 MyClaw · 下一代透明智能体架构**
+**MyClaw · 透明可控智能体框架**
 
 </div>
