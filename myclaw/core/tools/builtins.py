@@ -60,21 +60,86 @@ def get_current_time() -> str:
     return f"当前本地系统时间是: {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
 
+import ast
+import operator
+
+# 安全数学运算符映射表（AST 白名单）
+_SAFE_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+    ast.USub: operator.neg,      # 负号
+    ast.UAdd: operator.pos,      # 正号
+}
+
+
+def _safe_eval_math(expression: str) -> float:
+    """
+    基于 AST 白名单的安全数学表达式计算器。
+    只允许：数字、加减乘除幂模、括号、正负号。
+    拒绝：函数调用、属性访问、导入、字符串、列表等任何危险操作。
+    """
+    tree = ast.parse(expression, mode='eval')
+
+    def _eval_node(node):
+        if isinstance(node, ast.Constant):
+            # Python 3.8+ 的常量节点
+            if isinstance(node.value, (int, float)):
+                return node.value
+            raise ValueError(f"不支持的常量类型: {type(node.value)}")
+
+        elif isinstance(node, ast.Num):
+            # Python 3.7 兼容的数字节点
+            return node.n
+
+        elif isinstance(node, ast.BinOp):
+            # 二元运算：如 1 + 2
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            op_type = type(node.op)
+            if op_type in _SAFE_OPERATORS:
+                return _SAFE_OPERATORS[op_type](left, right)
+            raise ValueError(f"不支持的运算符: {op_type.__name__}")
+
+        elif isinstance(node, ast.UnaryOp):
+            # 一元运算：如 -5, +3
+            operand = _eval_node(node.operand)
+            op_type = type(node.op)
+            if op_type in _SAFE_OPERATORS:
+                return _SAFE_OPERATORS[op_type](operand)
+            raise ValueError(f"不支持的一元运算符: {op_type.__name__}")
+
+        elif isinstance(node, ast.Expression):
+            # 顶层表达式节点
+            return _eval_node(node.body)
+
+        else:
+            # 拒绝所有其他节点类型（函数调用、属性访问等）
+            raise ValueError(f"禁止的表达式类型: {type(node).__name__}")
+
+    return _eval_node(tree)
+
+
 @my_tool
 def calculator(expression: str) -> str:
     """
-    一个简单的数学计算器。
+    一个安全的数学计算器。
     用于计算基础的数学表达式，例如: '3 * 5' 或 '100 / 4'。
-    注意：参数 expression 必须是一个合法的 Python 数学表达式字符串。
+    支持：加减乘除、幂运算、模运算、括号、正负号。
+    不支持：函数调用、变量、字符串等（这是安全限制）。
     """
     try:
-        # 警告: eval 在真实的生产环境中存在注入风险！
-        # 这里仅为了搭建核心层做快速 Demo。未来在生产级扩展中，
-        # 应该替换为基于 AST 的安全解析器，或者更专业的数学库（如 numexpr）。
-        result = eval(expression, {"__builtins__": {}}, {})
+        result = _safe_eval_math(expression)
         return f"表达式 '{expression}' 的计算结果是: {result}"
+    except ValueError as e:
+        return f"计算出错：{str(e)}。请检查表达式是否只包含数字和数学运算符。"
+    except SyntaxError:
+        return f"计算出错：表达式语法无效。"
     except Exception as e:
-        return f"计算出错，请检查表达式格式。错误信息: {str(e)}"
+        return f"计算出错：{str(e)}"
 
 
 @my_tool
