@@ -5,9 +5,12 @@ from langgraph.graph.message import add_messages
 class AgentState(TypedDict):
     # 存储对话历史。
     messages: Annotated[list[BaseMessage], add_messages]
-    
+
     # 摘要压缩
     summary: str
+
+    # Skill 上下文（激活的 skill 内容）
+    skill_context: str
 
 def trim_context_messages(messages: list[BaseMessage], trigger_turns: int = 8, keep_turns: int = 4) -> tuple[list[BaseMessage], list[BaseMessage]]:
     # 按照完整‘用户回合’来裁剪上下文：即 一个会从从HumanMessage开始，直到下一个HumanMessage结束，会把AIMessage、tool_calls、ToolMessage一并保留

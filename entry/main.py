@@ -4,7 +4,7 @@ import time
 import asyncio
 import random
 import questionary
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -20,7 +20,18 @@ from myclaw.core.bus import task_queue
 from myclaw.core.heartbeat import pacemaker_loop
 from myclaw.core.provider import get_provider
 from myclaw.core.tools.base import set_current_thread_id
+from myclaw.core.skill_loader import (
+    scan_skill_index,
+    get_skill_index_text,
+    load_skill_full,
+    detect_trigger_skills,
+    get_skill_by_name,
+    get_skill_dir
+)
 from langchain_core.messages import HumanMessage
+
+# 全局状态：当前激活的 skill
+_active_skill: str = None
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -83,6 +94,112 @@ def print_banner():
 
 def cprint(text="", end="\n"):
     print_formatted_text(ANSI(str(text)), end=end)
+
+
+def show_skill_list():
+    """显示所有可用的 skill 列表"""
+    skills = scan_skill_index()
+    if not skills:
+        cprint("  \033[38;5;141m当前没有加载任何 skill。\033[0m\n")
+        return
+
+    cprint("  \033[38;5;51m✦ 可用 Skill 列表：\033[0m\n")
+    for skill in skills:
+        workflow_tag = " \033[38;5;141m[工作流]\033[0m" if skill.workflow else ""
+        triggers = []
+        if skill.trigger_words.exact:
+            triggers.append(f"精确: {', '.join(skill.trigger_words.exact[:2])}")
+        if skill.trigger_words.fuzzy:
+            triggers.append(f"模糊: {', '.join(skill.trigger_words.fuzzy[:2])}")
+        trigger_text = " | ".join(triggers) if triggers else ""
+
+        cprint(f"    \033[38;5;250m• \033[38;5;51m{skill.name}\033[38;5;250m{workflow_tag} - {skill.description[:60]}\033[0m")
+        if trigger_text:
+            cprint(f"      \033[38;5;242m触发词: {trigger_text}\033[0m")
+    cprint("")
+
+
+def show_skill_status():
+    """显示当前激活的 skill 状态"""
+    global _active_skill
+    if _active_skill:
+        skill = get_skill_by_name(_active_skill)
+        if skill:
+            cprint(f"  \033[38;5;51m✦ 当前激活 Skill: \033[38;5;141m{skill.name}\033[0m\n")
+            cprint(f"    \033[38;5;250m{skill.description}\033[0m\n")
+        else:
+            cprint(f"  \033[38;5;141m✦ 当前激活 Skill: {_active_skill}\033[0m\n")
+    else:
+        cprint("  \033[38;5;242m当前没有激活任何 Skill。使用 /skill <name> 激活。\033[0m\n")
+
+
+def deactivate_skill():
+    """关闭当前激活的 skill"""
+    global _active_skill
+    if _active_skill:
+        cprint(f"  \033[38;5;141m✦ Skill '{_active_skill}' 已关闭。\033[0m\n")
+        _active_skill = None
+    else:
+        cprint("  \033[38;5;242m当前没有激活任何 Skill。\033[0m\n")
+
+
+def handle_slash_command(user_input: str) -> bool:
+    """
+    处理 slash 命令。
+
+    Returns:
+        True 表示命令已处理，不需要发送给 agent
+        False 表示需要发送给 agent
+    """
+    global _active_skill
+
+    # /skills - 列出所有 skill
+    if user_input == "/skills":
+        show_skill_list()
+        return True
+
+    # /skill status - 显示当前状态
+    if user_input == "/skill status" or user_input == "/skill":
+        show_skill_status()
+        return True
+
+    # /skill off - 关闭当前 skill
+    if user_input == "/skill off":
+        deactivate_skill()
+        return True
+
+    # /skill <name> - 激活指定 skill
+    if user_input.startswith("/skill "):
+        skill_name = user_input[7:].strip()
+        if skill_name and skill_name not in ["status", "off"]:
+            skill = get_skill_by_name(skill_name)
+            if skill:
+                _active_skill = skill_name
+                cprint(f"  \033[38;5;51m✦ Skill '\033[38;5;141m{skill.name}\033[38;5;51m' 已激活\033[0m\n")
+                if skill.workflow:
+                    cprint(f"    \033[38;5;141m[工作流型] 将注入流程指导并启用关联工具\033[0m\n")
+                # 显示 skill 简介
+                cprint(f"    \033[38;5;250m{skill.description}\033[0m\n")
+                if skill.references:
+                    cprint(f"    \033[38;5;242m引用资源: {', '.join(skill.references)}\033[0m\n")
+                if skill.tools:
+                    tool_names = [t.name for t in skill.tools]
+                    cprint(f"    \033[38;5;242m关联工具: {', '.join(tool_names)}\033[0m\n")
+            else:
+                # 尝试直接用文件夹名查找
+                skill_dir = get_skill_dir(skill_name)
+                if skill_dir:
+                    skills = scan_skill_index()
+                    for s in skills:
+                        if s.folder_name == skill_name:
+                            _active_skill = s.name
+                            cprint(f"  \033[38;5;51m✦ Skill '\033[38;5;141m{s.name}\033[38;5;51m' 已激活\033[0m\n")
+                            return True
+                cprint(f"  \033[38;5;196m[ 未找到 Skill: {skill_name} ]\033[0m\n")
+                cprint(f"  \033[38;5;242m使用 /skills 查看可用列表\033[0m\n")
+        return True
+
+    return False
 
 
 async def async_main(session_id: str = None, session_name: str = None, persona_name: str = "default"):
@@ -158,15 +275,43 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
                 if user_input.lower() in ["/exit", "/quit"]:
                     task_queue.task_done()
                     break
-                
+
                 spinner.current_words = spinner.action_words.copy()
                 random.shuffle(spinner.current_words)
-                
+
                 spinner.start_time = time.time()
                 spinner.is_spinning = True
                 spinner.is_tool_calling = False
-                
-                inputs = {"messages": [HumanMessage(content=user_input)]}
+
+                # 构建 skill 上下文
+                skill_context = ""
+
+                # 1. 检查当前激活的 skill
+                if _active_skill:
+                    skill_content = load_skill_full(_active_skill)
+                    if not skill_content.startswith("错误"):
+                        skill_context = f"\n\n【当前激活 Skill: {_active_skill}】\n{skill_content}\n"
+
+                # 2. 自动触发检测
+                triggered_skills = detect_trigger_skills(user_input)
+                if triggered_skills:
+                    for skill in triggered_skills:
+                        # 避免重复加载已激活的 skill
+                        if skill.name != _active_skill:
+                            triggered_content = load_skill_full(skill.name)
+                            if not triggered_content.startswith("错误"):
+                                skill_context += f"\n\n【自动触发 Skill: {skill.name}】\n{triggered_content}\n"
+                            cprint(f"  \033[38;5;51m● 自动触发 Skill: \033[38;5;141m{skill.name}\033[0m\n")
+
+                # 构建消息，如果有 skill 上下文则通过状态传递
+                if skill_context:
+                    inputs = {
+                        "messages": [HumanMessage(content=user_input)],
+                        "skill_context": skill_context
+                    }
+                else:
+                    inputs = {"messages": [HumanMessage(content=user_input)]}
+
                 try:
                     async for event in app.astream(inputs, config=config, stream_mode="updates"):
                         for node_name, node_data in event.items():
@@ -231,6 +376,11 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
 
                     user_input = user_input.strip()
                     if not user_input:
+                        continue
+
+                    # 处理 slash 命令（/skill, /skills 等）
+                    if user_input.startswith("/skill"):
+                        handle_slash_command(user_input)
                         continue
 
                     # 处理 /rename 命令

@@ -41,6 +41,9 @@ def create_agent_app(
         thread_id = config.get("configurable", {}).get("thread_id", "system_default")
 
         raw_messages = state["messages"]
+
+        # 获取 skill 上下文（如果有）
+        skill_context = state.get("skill_context", "")
         # 记录工具结果
         if raw_messages:
             recent_tool_msgs = []
@@ -138,6 +141,10 @@ def create_agent_app(
             user_profile=profile_text,
             context_summary=summary_text
         )
+
+        # 如果有 skill 上下文，附加到 System Prompt
+        if skill_context:
+            sys_prompt += f"\n\n=============================\n【Skill 上下文】\n{skill_context}\n=============================\n"
 
         msgs_for_llm = [SystemMessage(content=sys_prompt)] + \
         [m for m in final_msgs if not isinstance(m, SystemMessage)]

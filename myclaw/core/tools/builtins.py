@@ -5,7 +5,7 @@ import json
 import uuid
 import threading
 from ..config import MEMORY_DIR, TASKS_FILE
-from ..skill_loader import load_skill_content
+from ..skill_loader import load_skill_content, load_skill_full, get_skill_dir, get_skill_by_name
 from .sandbox_tools import (
     list_office_files,
     read_office_file,
@@ -334,19 +334,106 @@ def modify_scheduled_task(task_id: str, new_time: str = None, new_description: s
 
 
 @my_tool
-def load_skill(skill_name: str) -> str:
+def load_skill(skill_name: str, full: bool = True) -> str:
     """
-    按需加载某个 skill 的完整内容。
+    按需加载某个 skill 的内容。
 
     使用场景：
     1. 你已从 System Prompt 中的 skill 索引看到可用的 skill 列表
     2. 用户的问题与某个 skill 的触发词相关（如提到"毛泽东"、"毛选"等）
     3. 你判断需要深入了解该 skill 的方法论或工具
 
-    参数 skill_name 应来自已加载的 skill 索引列表中的 name 字段。
-    返回完整的 SKILL.md 内容，包含知识、方法论、工具定义等。
+    参数:
+        skill_name: skill 的 name 字段（来自索引列表）
+        full: 是否加载完整内容（包含引用资源）。默认 True。
+
+    返回:
+        skill 的完整内容（SKILL.md + 引用的额外文档）
     """
-    return load_skill_content(skill_name)
+    if full:
+        return load_skill_full(skill_name)
+    else:
+        # 只加载 SKILL.md，不加载引用资源
+        return load_skill_content(skill_name)
+
+
+import subprocess
+
+
+@my_tool
+def execute_skill_script(skill_name: str, script_name: str, script_args: str = "") -> str:
+    """
+    执行 skill 目录下的脚本。
+
+    使用场景：
+    1. 工作流型 skill 定义了关联的脚本工具
+    2. SKILL.md 中指定了如何使用脚本
+    3. 你需要执行脚本来完成任务
+
+    参数:
+        skill_name: skill 的 name 字段
+        script_name: 脚本文件名（如 weather_query.py）
+        script_args: 传递给脚本的参数（如 "北京"）
+
+    返回:
+        脚本的执行结果
+    """
+    skill_dir = get_skill_dir(skill_name)
+    if not skill_dir:
+        return f"错误：未找到 skill '{skill_name}'"
+
+    script_path = os.path.join(skill_dir, script_name)
+    if not os.path.exists(script_path):
+        return f"错误：skill '{skill_name}' 下不存在脚本 '{script_name}'"
+
+    # skill 脚本在 office/skills 目录下，是受信任的沙盒内容
+    # 直接执行，不通过 execute_office_shell（它有 python 黑名单）
+    try:
+        if script_name.endswith(".py"):
+            # 使用 Python 解释器执行
+            cmd = ["python", script_name]
+            if script_args:
+                # 将参数按空格分割
+                cmd.extend(script_args.split())
+        elif script_name.endswith(".sh"):
+            cmd = ["./" + script_name]
+            if script_args:
+                cmd.extend(script_args.split())
+        else:
+            cmd = [script_name]
+            if script_args:
+                cmd.extend(script_args.split())
+
+        result = subprocess.run(
+            cmd,
+            cwd=skill_dir,
+            capture_output=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=30
+        )
+
+        output = f"执行脚本: {script_name}\n"
+        output += f"参数: {script_args}\n"
+        output += f"退出码: {result.returncode}\n"
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        if stdout:
+            output += f"\n[输出]\n{stdout}"
+        if stderr:
+            output += f"\n[错误]\n{stderr}"
+
+        if not stdout and not stderr and result.returncode == 0:
+            output += "\n(执行成功，无输出)"
+
+        return output
+
+    except subprocess.TimeoutExpired:
+        return f"错误：脚本执行超时（30s）"
+    except Exception as e:
+        return f"执行异常：{str(e)}"
 
 
 BUILTIN_TOOLS = [
@@ -362,5 +449,6 @@ BUILTIN_TOOLS = [
     list_scheduled_tasks,
     delete_scheduled_task,
     modify_scheduled_task,
-    load_skill
+    load_skill,
+    execute_skill_script
 ]
