@@ -1,5 +1,7 @@
 <div align="center">
 
+![MyClaw Banner](docs/readme_banner.png)
+
 # MyClaw
 
 ### 基于 LangGraph 的透明可控智能体框架

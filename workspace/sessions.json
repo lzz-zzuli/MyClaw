@@ -50,9 +50,9 @@
   {
     "session_id": "session_20260427_232848",
     "name": "test_skill",
-    "description": "<think>用户要求我根据对话内容生成一个简短的会话描述（不超过30字），描述本次对话的主要话题或",
+    "description": "<think>用户要求我根据对话内容生成一个简短的会话描述，不超过30字，描述本次对话的主要话题或目",
     "created_at": "2026-04-27T15:28:48Z",
-    "updated_at": "2026-04-28T06:56:29Z",
-    "message_count": 5
+    "updated_at": "2026-04-28T15:29:01Z",
+    "message_count": 6
   }
 ]
