@@ -174,6 +174,10 @@ myclaw run -r "会话名称"
 myclaw run -n "工作助手"
 ```
 
+**运行效果示例：**
+
+![MyClaw Run Example](docs/run-example.png)
+
 ---
 
 ## 会话管理
