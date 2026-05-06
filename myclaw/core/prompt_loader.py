@@ -10,6 +10,7 @@ PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 PLACEHOLDER_SKILL_INDEX = "{{SKILL_INDEX}}"
 PLACEHOLDER_USER_PROFILE = "{{USER_PROFILE}}"
 PLACEHOLDER_CONTEXT_SUMMARY = "{{CONTEXT_SUMMARY}}"
+PLACEHOLDER_KNOWLEDGE_CONTEXT = "{{KNOWLEDGE_CONTEXT}}"
 
 
 @dataclass
@@ -84,7 +85,8 @@ def build_system_prompt(
     persona_name: str = "default",
     skill_index: str = "",
     user_profile: str = "",
-    context_summary: str = ""
+    context_summary: str = "",
+    knowledge_context: str = ""
 ) -> str:
     """
     构建完整的系统提示词。
@@ -94,6 +96,7 @@ def build_system_prompt(
         skill_index: Skill 索引文本
         user_profile: 用户画像内容
         context_summary: 近期对话摘要
+        knowledge_context: 知识库召回内容
 
     Returns:
         完整的系统提示词
@@ -104,6 +107,7 @@ def build_system_prompt(
     prompt = template.replace(PLACEHOLDER_SKILL_INDEX, skill_index)
     prompt = prompt.replace(PLACEHOLDER_USER_PROFILE, user_profile)
     prompt = prompt.replace(PLACEHOLDER_CONTEXT_SUMMARY, context_summary)
+    prompt = prompt.replace(PLACEHOLDER_KNOWLEDGE_CONTEXT, knowledge_context)
 
     return prompt
 

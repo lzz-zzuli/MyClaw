@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from .base import my_tool, MyClawBaseTool, get_current_thread_id
 import os
 import json
 import uuid
 import threading
-from ..config import MEMORY_DIR, TASKS_FILE
+import yaml
+from ..config import MEMORY_DIR, KNOWLEDGE_DIR, KNOWLEDGE_INDEX_FILE, TASKS_FILE
 from ..skill_loader import load_skill_content, load_skill_full, get_skill_dir, get_skill_by_name
 from .sandbox_tools import (
     list_office_files,
@@ -15,7 +16,209 @@ from .sandbox_tools import (
 
 
 tasks_lock = threading.Lock()
+knowledge_lock = threading.Lock()
 PROFILE_PATH = os.path.join(MEMORY_DIR, "user_profile.md")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_memory_id(note_id: str) -> str:
+    safe = "".join(c for c in note_id.lower() if c.isalnum() or c in "-_")
+    return safe[:32] or str(uuid.uuid4())[:8]
+
+
+def _normalize_tags(tags) -> list[str]:
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        raw_tags = tags.replace("，", ",").split(",")
+    elif isinstance(tags, list):
+        raw_tags = tags
+    else:
+        raw_tags = [str(tags)]
+
+    normalized = []
+    for tag in raw_tags:
+        value = str(tag).strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _knowledge_note_path(note_id: str) -> str:
+    return os.path.join(KNOWLEDGE_DIR, f"{_normalize_memory_id(note_id)}.md")
+
+
+def _ensure_knowledge_store():
+    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+    if not os.path.exists(KNOWLEDGE_INDEX_FILE):
+        with open(KNOWLEDGE_INDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+
+
+def _load_knowledge_index() -> list[dict]:
+    _ensure_knowledge_store()
+    try:
+        with open(KNOWLEDGE_INDEX_FILE, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return []
+            data = json.loads(content)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_knowledge_index(index_items: list[dict]):
+    _ensure_knowledge_store()
+    with open(KNOWLEDGE_INDEX_FILE, "w", encoding="utf-8") as f:
+        json.dump(index_items, f, ensure_ascii=False, indent=2)
+
+
+def _split_frontmatter(content: str) -> tuple[dict, str]:
+    if not content.startswith("---"):
+        return {}, content.strip()
+
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}, content.strip()
+
+    try:
+        metadata = yaml.safe_load(parts[1].strip()) or {}
+    except yaml.YAMLError:
+        metadata = {}
+
+    return metadata, parts[2].strip()
+
+
+def _dump_memory_note(metadata: dict, body: str) -> str:
+    frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+    body_text = body.strip()
+    return f"---\n{frontmatter}\n---\n\n{body_text}\n"
+
+
+def _load_memory_note_record(note_id: str) -> dict | None:
+    note_path = _knowledge_note_path(note_id)
+    if not os.path.exists(note_path):
+        return None
+
+    with open(note_path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    metadata, body = _split_frontmatter(raw)
+    return {
+        "id": metadata.get("id", _normalize_memory_id(note_id)),
+        "title": metadata.get("title", "未命名记忆"),
+        "tags": _normalize_tags(metadata.get("tags", [])),
+        "source": metadata.get("source", "user"),
+        "created_at": metadata.get("created_at", ""),
+        "updated_at": metadata.get("updated_at", ""),
+        "kind": metadata.get("kind", "fact"),
+        "content": body,
+        "path": note_path,
+    }
+
+
+def _build_memory_excerpt(content: str, limit: int = 80) -> str:
+    single_line = " ".join(content.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[:limit] + "..."
+
+
+def _upsert_knowledge_index_entry(record: dict):
+    index_items = _load_knowledge_index()
+    entry = {
+        "id": record["id"],
+        "title": record["title"],
+        "tags": record["tags"],
+        "source": record["source"],
+        "created_at": record["created_at"],
+        "updated_at": record["updated_at"],
+        "kind": record["kind"],
+        "excerpt": _build_memory_excerpt(record["content"]),
+    }
+
+    replaced = False
+    for i, item in enumerate(index_items):
+        if item.get("id") == record["id"]:
+            index_items[i] = entry
+            replaced = True
+            break
+
+    if not replaced:
+        index_items.append(entry)
+
+    index_items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    _save_knowledge_index(index_items)
+
+
+def _remove_knowledge_index_entry(note_id: str):
+    index_items = _load_knowledge_index()
+    new_items = [item for item in index_items if item.get("id") != note_id]
+    _save_knowledge_index(new_items)
+
+
+def _score_memory_record(record: dict, query: str = "", tag: str = None, kind: str = None) -> int:
+    score = 0
+    text_parts = [record.get("title", ""), record.get("content", ""), " ".join(record.get("tags", []))]
+    text = "\n".join(text_parts).lower()
+
+    if kind and record.get("kind") != kind:
+        return -1
+
+    if tag:
+        tag_value = tag.strip().lower()
+        tags = [t.lower() for t in record.get("tags", [])]
+        if tag_value in tags:
+            score += 5
+        else:
+            return -1
+
+    if query:
+        tokens = [token.strip().lower() for token in query.replace("，", " ").replace(",", " ").split() if token.strip()]
+        if not tokens:
+            tokens = [query.strip().lower()]
+        token_hits = 0
+        for token in tokens:
+            if token and token in text:
+                token_hits += 1
+                score += 3 if token in record.get("title", "").lower() else 1
+        if token_hits == 0:
+            return -1
+
+    if not query and not tag and not kind:
+        score = 1
+
+    return score
+
+
+def get_relevant_memory_notes(query: str = "", summary: str = "", limit: int = 5) -> list[dict]:
+    with knowledge_lock:
+        index_items = _load_knowledge_index()
+
+    if not index_items:
+        return []
+
+    query_text = (query or "").strip()
+    summary_text = (summary or "").strip()
+    combined_query = query_text if query_text else summary_text
+
+    scored = []
+    for item in index_items:
+        record = _load_memory_note_record(item.get("id", ""))
+        if not record:
+            continue
+        score = _score_memory_record(record, query=combined_query)
+        if score >= 0:
+            if query_text and summary_text and summary_text.lower() in record.get("content", "").lower():
+                score += 1
+            scored.append((score, record))
+
+    scored.sort(key=lambda pair: (pair[0], pair[1].get("updated_at", "")), reverse=True)
+    return [record for _, record in scored[:limit]]
 
 
 @my_tool
@@ -143,9 +346,174 @@ def calculator(expression: str) -> str:
 
 
 @my_tool
+def save_memory_note(title: str, content: str, tags: str = "", kind: str = "fact", source: str = "user") -> str:
+    """
+    向知识库新增一条长期记忆。
+    适用于需要跨会话保留的事实、偏好、项目背景，不适用于临时对话上下文。
+    """
+    with knowledge_lock:
+        _ensure_knowledge_store()
+        note_id = str(uuid.uuid4())[:8]
+        normalized_tags = _normalize_tags(tags)
+        now = _now_iso()
+        record = {
+            "id": note_id,
+            "title": title.strip() or "未命名记忆",
+            "tags": normalized_tags,
+            "source": source.strip() or "user",
+            "created_at": now,
+            "updated_at": now,
+            "kind": kind.strip() or "fact",
+            "content": content.strip(),
+        }
+        note_path = _knowledge_note_path(note_id)
+        metadata = {k: record[k] for k in ["id", "title", "tags", "source", "created_at", "updated_at", "kind"]}
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(_dump_memory_note(metadata, record["content"]))
+        _upsert_knowledge_index_entry(record)
+    return f"已写入知识库记忆 [ID: {note_id}] {record['title']}"
+
+
+@my_tool
+def list_memory_notes(kind: str = "", tag: str = "", limit: int = 20) -> str:
+    """
+    列出知识库中的记忆条目，可按 kind 或 tag 过滤。
+    """
+    with knowledge_lock:
+        index_items = _load_knowledge_index()
+
+    if not index_items:
+        return "当前知识库为空。"
+
+    filtered = []
+    for item in index_items:
+        if kind and item.get("kind") != kind:
+            continue
+        if tag:
+            tags = [t.lower() for t in item.get("tags", [])]
+            if tag.strip().lower() not in tags:
+                continue
+        filtered.append(item)
+
+    if not filtered:
+        return "没有符合条件的知识库记忆。"
+
+    lines = ["当前知识库记忆："]
+    for item in filtered[:max(1, limit)]:
+        tags_text = ", ".join(item.get("tags", [])) if item.get("tags") else "无标签"
+        lines.append(
+            f"- [ID: {item.get('id')}] {item.get('title')} | kind: {item.get('kind')} | tags: {tags_text}"
+        )
+    return "\n".join(lines)
+
+
+@my_tool
+def read_memory_note(note_id: str) -> str:
+    """
+    按 ID 读取一条知识库记忆的完整内容。
+    """
+    with knowledge_lock:
+        record = _load_memory_note_record(note_id)
+
+    if not record:
+        return f"未找到 ID 为 {note_id} 的知识库记忆。"
+
+    tags_text = ", ".join(record.get("tags", [])) if record.get("tags") else "无标签"
+    return (
+        f"[ID: {record['id']}] {record['title']}\n"
+        f"kind: {record['kind']}\n"
+        f"source: {record['source']}\n"
+        f"tags: {tags_text}\n"
+        f"created_at: {record['created_at']}\n"
+        f"updated_at: {record['updated_at']}\n\n"
+        f"{record['content']}"
+    )
+
+
+@my_tool
+def search_memory_notes(query: str = "", tag: str = "", kind: str = "", limit: int = 5) -> str:
+    """
+    按关键词、tag 或 kind 搜索知识库记忆。
+    """
+    with knowledge_lock:
+        index_items = _load_knowledge_index()
+
+    if not index_items:
+        return "当前知识库为空。"
+
+    scored = []
+    for item in index_items:
+        record = _load_memory_note_record(item.get("id", ""))
+        if not record:
+            continue
+        score = _score_memory_record(record, query=query, tag=tag or None, kind=kind or None)
+        if score >= 0:
+            scored.append((score, record))
+
+    if not scored:
+        return "没有找到相关的知识库记忆。"
+
+    scored.sort(key=lambda pair: (pair[0], pair[1].get("updated_at", "")), reverse=True)
+    lines = ["搜索到的知识库记忆："]
+    for score, record in scored[:max(1, limit)]:
+        tags_text = ", ".join(record.get("tags", [])) if record.get("tags") else "无标签"
+        lines.append(
+            f"- [ID: {record['id']}] {record['title']} | score: {score} | kind: {record['kind']} | tags: {tags_text}"
+        )
+        lines.append(f"  摘要: {_build_memory_excerpt(record['content'], limit=120)}")
+    return "\n".join(lines)
+
+
+@my_tool
+def update_memory_note(note_id: str, title: str = "", content: str = "", tags: str = "", kind: str = "", source: str = "") -> str:
+    """
+    更新一条已有的知识库记忆。
+    未提供的字段会保留原值。
+    """
+    with knowledge_lock:
+        record = _load_memory_note_record(note_id)
+        if not record:
+            return f"未找到 ID 为 {note_id} 的知识库记忆。"
+
+        if title.strip():
+            record["title"] = title.strip()
+        if content.strip():
+            record["content"] = content.strip()
+        if tags.strip():
+            record["tags"] = _normalize_tags(tags)
+        if kind.strip():
+            record["kind"] = kind.strip()
+        if source.strip():
+            record["source"] = source.strip()
+        record["updated_at"] = _now_iso()
+
+        metadata = {k: record[k] for k in ["id", "title", "tags", "source", "created_at", "updated_at", "kind"]}
+        with open(record["path"], "w", encoding="utf-8") as f:
+            f.write(_dump_memory_note(metadata, record["content"]))
+        _upsert_knowledge_index_entry(record)
+
+    return f"知识库记忆 [ID: {record['id']}] 已更新。"
+
+
+@my_tool
+def delete_memory_note(note_id: str) -> str:
+    """
+    按 ID 删除一条知识库记忆。
+    """
+    with knowledge_lock:
+        record = _load_memory_note_record(note_id)
+        if not record:
+            return f"未找到 ID 为 {note_id} 的知识库记忆。"
+        if os.path.exists(record["path"]):
+            os.remove(record["path"])
+        _remove_knowledge_index_entry(record["id"])
+
+    return f"知识库记忆 [ID: {record['id']}] 已删除。"
+
+
+@my_tool
 def schedule_task(target_time: str, description: str, repeat: str = None, repeat_count: int = None) -> str:
     """
-    为一个未来的任务设定闹钟或提醒。
     参数 target_time 必须是严格的格式："YYYY-MM-DD HH:MM:SS"（请先调用 get_current_time 获取当前时间，并在其基础上推算）。
     参数 description 是需要执行的动作或要说的话。
     
@@ -440,6 +808,12 @@ BUILTIN_TOOLS = [
     get_current_time,
     calculator,
     save_user_profile,
+    save_memory_note,
+    list_memory_notes,
+    read_memory_note,
+    search_memory_notes,
+    update_memory_note,
+    delete_memory_note,
     list_office_files,
     read_office_file,
     write_office_file,

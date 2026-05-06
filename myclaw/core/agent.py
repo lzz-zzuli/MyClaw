@@ -5,7 +5,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from .context import AgentState, trim_context_messages
 from .provider import get_provider
-from .tools.builtins import BUILTIN_TOOLS
+from .tools.builtins import BUILTIN_TOOLS, get_relevant_memory_notes
 from .logger import audit_logger
 from .config import MEMORY_DIR
 from .skill_loader import get_skill_index_text
@@ -126,6 +126,36 @@ def create_agent_app(
         # 构建用户画像文本
         profile_text = f"\n=============================\n【用户长期画像】\n{profile_content}\n=============================\n"
 
+        # 构建知识库上下文
+        latest_user_text = ""
+        for msg in reversed(final_msgs):
+            if isinstance(msg, HumanMessage) and isinstance(msg.content, str):
+                latest_user_text = msg.content.strip()
+                break
+
+        memory_notes = get_relevant_memory_notes(
+            query=latest_user_text,
+            summary=active_summary,
+            limit=5
+        )
+        knowledge_text = ""
+        if memory_notes:
+            memory_lines = []
+            for note in memory_notes:
+                tags_text = ", ".join(note.get("tags", [])) if note.get("tags") else "无标签"
+                excerpt = " ".join(note.get("content", "").split())
+                if len(excerpt) > 140:
+                    excerpt = excerpt[:140] + "..."
+                memory_lines.append(
+                    f"- [{note.get('kind', 'fact')}] {note.get('title', '未命名记忆')} (ID: {note.get('id')}, tags: {tags_text})\n  {excerpt}"
+                )
+            knowledge_text = (
+                "\n=============================\n"
+                "【知识库记忆】\n"
+                "以下是与当前问题相关的长期记忆，可用于跨会话保持事实一致性。\n"
+                + "\n".join(memory_lines)
+                + "\n=============================\n"
+            )
         # 构建 Skill 索引文本
         skill_text = f"\n=============================\n【可用 Skill 索引】\n以下 skill 可按需加载完整内容。当你判断需要某个 skill 时，调用 load_skill 工具。\n{skill_index_text}\n=============================\n"
 
@@ -139,7 +169,8 @@ def create_agent_app(
             persona_name=persona_name,
             skill_index=skill_text,
             user_profile=profile_text,
-            context_summary=summary_text
+            context_summary=summary_text,
+            knowledge_context=knowledge_text
         )
 
         # 如果有 skill 上下文，附加到 System Prompt

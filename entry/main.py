@@ -20,6 +20,7 @@ from myclaw.core.bus import task_queue
 from myclaw.core.heartbeat import pacemaker_loop
 from myclaw.core.provider import get_provider
 from myclaw.core.tools.base import set_current_thread_id
+from myclaw.core.tools.builtins import list_memory_notes, read_memory_note, delete_memory_note
 from myclaw.core.skill_loader import (
     scan_skill_index,
     get_skill_index_text,
@@ -156,6 +157,34 @@ def handle_slash_command(user_input: str) -> bool:
     # /skills - 列出所有 skill
     if user_input == "/skills":
         show_skill_list()
+        return True
+
+    # /memory - 显示帮助
+    if user_input == "/memory":
+        cprint("  \033[38;5;51m✦ 知识库命令：\033[0m\n")
+        cprint("    \033[38;5;250m/memory list               查看知识库记忆\033[0m")
+        cprint("    \033[38;5;250m/memory read <id>          查看指定记忆\033[0m")
+        cprint("    \033[38;5;250m/memory forget <id>        删除指定记忆\033[0m\n")
+        return True
+
+    if user_input == "/memory list":
+        cprint(f"  \033[38;5;250m{list_memory_notes.invoke({})}\033[0m\n")
+        return True
+
+    if user_input.startswith("/memory read "):
+        note_id = user_input[len("/memory read "):].strip()
+        if not note_id:
+            cprint("  \033[31m[ 请输入记忆 ID，如 /memory read abc12345 ]\033[0m\n")
+            return True
+        cprint(f"  \033[38;5;250m{read_memory_note.invoke({'note_id': note_id})}\033[0m\n")
+        return True
+
+    if user_input.startswith("/memory forget "):
+        note_id = user_input[len("/memory forget "):].strip()
+        if not note_id:
+            cprint("  \033[31m[ 请输入记忆 ID，如 /memory forget abc12345 ]\033[0m\n")
+            return True
+        cprint(f"  \033[38;5;250m{delete_memory_note.invoke({'note_id': note_id})}\033[0m\n")
         return True
 
     # /skill status - 显示当前状态

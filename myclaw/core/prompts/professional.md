@@ -30,3 +30,5 @@ language: zh-CN
 {{USER_PROFILE}}
 
 {{CONTEXT_SUMMARY}}
+
+{{KNOWLEDGE_CONTEXT}}
