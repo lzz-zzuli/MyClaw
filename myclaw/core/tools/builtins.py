@@ -195,6 +195,47 @@ def _score_memory_record(record: dict, query: str = "", tag: str = None, kind: s
     return score
 
 
+def _hybrid_score_memory_record(
+    record: dict,
+    query: str = "",
+    tag: str = None,
+    kind: str = None,
+    semantic_scores: dict | None = None,
+    alpha: float = 0.6,
+) -> float:
+    """
+    混合评分: 关键词 + 语义。
+    alpha=0.6 时语义优先但关键词保底; alpha=0 退化为纯关键词。
+    """
+    keyword_raw = _score_memory_record(record, query=query, tag=tag, kind=kind)
+
+    # kind/tag 硬过滤: 关键词因 kind/tag 不匹配返回 -1, 直接淘汰
+    if keyword_raw < 0 and (kind or tag):
+        return -1.0
+
+    # 关键词归一化到 [0, 1]
+    MAX_KEYWORD_SCORE = 20.0
+    keyword_norm = min(max(keyword_raw, 0) / MAX_KEYWORD_SCORE, 1.0)
+
+    # 语义评分
+    note_id = record.get("id", "")
+    semantic = 0.0
+    if semantic_scores and note_id in semantic_scores:
+        semantic = semantic_scores[note_id]
+
+    # 无语义分数时 alpha 自动为 0
+    effective_alpha = alpha if semantic_scores else 0.0
+
+    # 混合评分
+    final_score = effective_alpha * semantic + (1 - effective_alpha) * keyword_norm
+
+    # 淘汰: 两个分数都是 0 且有查询条件
+    if query and final_score == 0.0 and keyword_raw < 0:
+        return -1.0
+
+    return final_score
+
+
 def get_relevant_memory_notes(query: str = "", summary: str = "", limit: int = 5) -> list[dict]:
     with knowledge_lock:
         index_items = _load_knowledge_index()
@@ -206,15 +247,35 @@ def get_relevant_memory_notes(query: str = "", summary: str = "", limit: int = 5
     summary_text = (summary or "").strip()
     combined_query = query_text if query_text else summary_text
 
+    # 语义检索
+    semantic_scores: dict[str, float] = {}
+    alpha = 0.6
+
+    if combined_query:
+        try:
+            from ..embedding_store import get_embedding_store
+            store = get_embedding_store()
+            if store.is_available():
+                alpha = float(os.environ.get("EMBEDDING_ALPHA", "0.6"))
+                semantic_results = store.search(combined_query, top_k=limit * 4)
+                semantic_scores = {note_id: score for note_id, score in semantic_results}
+        except Exception:
+            pass
+
+    # 混合评分
     scored = []
     for item in index_items:
         record = _load_memory_note_record(item.get("id", ""))
         if not record:
             continue
-        score = _score_memory_record(record, query=combined_query)
+        score = _hybrid_score_memory_record(
+            record, query=combined_query,
+            semantic_scores=semantic_scores if semantic_scores else None,
+            alpha=alpha,
+        )
         if score >= 0:
             if query_text and summary_text and summary_text.lower() in record.get("content", "").lower():
-                score += 1
+                score += 0.05
             scored.append((score, record))
 
     scored.sort(key=lambda pair: (pair[0], pair[1].get("updated_at", "")), reverse=True)
@@ -371,6 +432,16 @@ def save_memory_note(title: str, content: str, tags: str = "", kind: str = "fact
         with open(note_path, "w", encoding="utf-8") as f:
             f.write(_dump_memory_note(metadata, record["content"]))
         _upsert_knowledge_index_entry(record)
+
+    # 增量嵌入 (锁外执行, 失败不影响写入)
+    try:
+        from ..embedding_store import get_embedding_store
+        store = get_embedding_store()
+        if store.is_available():
+            store.embed_and_upsert(note_id, record["title"], record["content"], record["tags"])
+    except Exception:
+        pass
+
     return f"已写入知识库记忆 [ID: {note_id}] {record['title']}"
 
 
@@ -433,7 +504,7 @@ def read_memory_note(note_id: str) -> str:
 @my_tool
 def search_memory_notes(query: str = "", tag: str = "", kind: str = "", limit: int = 5) -> str:
     """
-    按关键词、tag 或 kind 搜索知识库记忆。
+    按关键词、tag 或 kind 搜索知识库记忆 (支持语义检索)。
     """
     with knowledge_lock:
         index_items = _load_knowledge_index()
@@ -441,12 +512,32 @@ def search_memory_notes(query: str = "", tag: str = "", kind: str = "", limit: i
     if not index_items:
         return "当前知识库为空。"
 
+    # 语义检索
+    semantic_scores: dict[str, float] = {}
+    alpha = 0.6
+
+    if query.strip():
+        try:
+            from ..embedding_store import get_embedding_store
+            store = get_embedding_store()
+            if store.is_available():
+                alpha = float(os.environ.get("EMBEDDING_ALPHA", "0.6"))
+                semantic_results = store.search(query.strip(), top_k=limit * 4)
+                semantic_scores = {note_id: score for note_id, score in semantic_results}
+        except Exception:
+            pass
+
     scored = []
     for item in index_items:
         record = _load_memory_note_record(item.get("id", ""))
         if not record:
             continue
-        score = _score_memory_record(record, query=query, tag=tag or None, kind=kind or None)
+        score = _hybrid_score_memory_record(
+            record, query=query,
+            tag=tag or None, kind=kind or None,
+            semantic_scores=semantic_scores if semantic_scores else None,
+            alpha=alpha,
+        )
         if score >= 0:
             scored.append((score, record))
 
@@ -458,7 +549,7 @@ def search_memory_notes(query: str = "", tag: str = "", kind: str = "", limit: i
     for score, record in scored[:max(1, limit)]:
         tags_text = ", ".join(record.get("tags", [])) if record.get("tags") else "无标签"
         lines.append(
-            f"- [ID: {record['id']}] {record['title']} | score: {score} | kind: {record['kind']} | tags: {tags_text}"
+            f"- [ID: {record['id']}] {record['title']} | score: {score:.3f} | kind: {record['kind']} | tags: {tags_text}"
         )
         lines.append(f"  摘要: {_build_memory_excerpt(record['content'], limit=120)}")
     return "\n".join(lines)
@@ -492,6 +583,15 @@ def update_memory_note(note_id: str, title: str = "", content: str = "", tags: s
             f.write(_dump_memory_note(metadata, record["content"]))
         _upsert_knowledge_index_entry(record)
 
+    # 增量重嵌入 (锁外执行, content_hash 变更时才重新调用 API)
+    try:
+        from ..embedding_store import get_embedding_store
+        store = get_embedding_store()
+        if store.is_available():
+            store.embed_and_upsert(record["id"], record["title"], record["content"], record["tags"])
+    except Exception:
+        pass
+
     return f"知识库记忆 [ID: {record['id']}] 已更新。"
 
 
@@ -507,6 +607,15 @@ def delete_memory_note(note_id: str) -> str:
         if os.path.exists(record["path"]):
             os.remove(record["path"])
         _remove_knowledge_index_entry(record["id"])
+
+    # 清理向量 (锁外执行)
+    try:
+        from ..embedding_store import get_embedding_store
+        store = get_embedding_store()
+        if store.is_available():
+            store.remove(record["id"])
+    except Exception:
+        pass
 
     return f"知识库记忆 [ID: {record['id']}] 已删除。"
 
