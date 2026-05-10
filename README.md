@@ -25,6 +25,10 @@
 
 MyClaw 是一个基于 LangGraph 状态机的 AI Agent 框架，提供 REPL 交互式智能终端体验。
 
+### 执行过程
+
+![MyClaw 执行过程图](docs/agent.png)
+
 ### 核心特性
 
 - **状态机驱动** - LangGraph 构建决策循环，每步可追溯
