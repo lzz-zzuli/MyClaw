@@ -25,7 +25,6 @@ from myclaw.core.skill_loader import (
     scan_skill_index,
     get_skill_index_text,
     load_skill_full,
-    detect_trigger_skills,
     get_skill_by_name,
     get_skill_dir
 )
@@ -106,17 +105,8 @@ def show_skill_list():
 
     cprint("  \033[38;5;51m✦ 可用 Skill 列表：\033[0m\n")
     for skill in skills:
-        workflow_tag = " \033[38;5;141m[工作流]\033[0m" if skill.workflow else ""
-        triggers = []
-        if skill.trigger_words.exact:
-            triggers.append(f"精确: {', '.join(skill.trigger_words.exact[:2])}")
-        if skill.trigger_words.fuzzy:
-            triggers.append(f"模糊: {', '.join(skill.trigger_words.fuzzy[:2])}")
-        trigger_text = " | ".join(triggers) if triggers else ""
-
-        cprint(f"    \033[38;5;250m• \033[38;5;51m{skill.name}\033[38;5;250m{workflow_tag} - {skill.description[:60]}\033[0m")
-        if trigger_text:
-            cprint(f"      \033[38;5;242m触发词: {trigger_text}\033[0m")
+        description = " ".join(skill.description.split())
+        cprint(f"    \033[38;5;250m• \033[38;5;51m{skill.name}\033[38;5;250m - {description[:80]}\033[0m")
     cprint("")
 
 
@@ -205,8 +195,6 @@ def handle_slash_command(user_input: str) -> bool:
             if skill:
                 _active_skill = skill_name
                 cprint(f"  \033[38;5;51m✦ Skill '\033[38;5;141m{skill.name}\033[38;5;51m' 已激活\033[0m\n")
-                if skill.workflow:
-                    cprint(f"    \033[38;5;141m[工作流型] 将注入流程指导并启用关联工具\033[0m\n")
                 # 显示 skill 简介
                 cprint(f"    \033[38;5;250m{skill.description}\033[0m\n")
                 if skill.references:
@@ -321,16 +309,7 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
                     if not skill_content.startswith("错误"):
                         skill_context = f"\n\n【当前激活 Skill: {_active_skill}】\n{skill_content}\n"
 
-                # 2. 自动触发检测
-                triggered_skills = detect_trigger_skills(user_input)
-                if triggered_skills:
-                    for skill in triggered_skills:
-                        # 避免重复加载已激活的 skill
-                        if skill.name != _active_skill:
-                            triggered_content = load_skill_full(skill.name)
-                            if not triggered_content.startswith("错误"):
-                                skill_context += f"\n\n【自动触发 Skill: {skill.name}】\n{triggered_content}\n"
-                            cprint(f"  \033[38;5;51m● 自动触发 Skill: \033[38;5;141m{skill.name}\033[0m\n")
+                # Skill 是否适用由 Agent 根据索引中的 name 和 description 判断，并通过 load_skill 工具按需加载。
 
                 # 构建消息，如果有 skill 上下文则通过状态传递
                 if skill_context:

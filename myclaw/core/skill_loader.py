@@ -1,5 +1,6 @@
 import os
 import re
+import urllib.parse
 import yaml
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
@@ -7,19 +8,33 @@ from dataclasses import dataclass, field
 from .config import SKILLS_DIR
 
 
-@dataclass
-class TriggerWords:
-    """触发词配置"""
-    exact: List[str] = field(default_factory=list)   # 精确触发词
-    fuzzy: List[str] = field(default_factory=list)   # 模糊触发词
+TEXT_RESOURCE_EXTENSIONS = {".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".py", ".js", ".ts", ".sh", ".html", ".css", ".xml"}
+SCRIPT_EXTENSIONS = {".py", ".sh", ".js", ".ts"}
+CONVENTIONAL_RESOURCE_DIRS = {"scripts", "references", "assets", "agents"}
+IGNORED_RESOURCE_NAMES = {".DS_Store"}
+MAX_AUTO_REFERENCE_FILES = 5
+MAX_AUTO_REFERENCE_BYTES_PER_FILE = 80_000
+MAX_AUTO_REFERENCE_TOTAL_BYTES = 200_000
+MAX_RESOURCE_READ_BYTES = 200_000
 
 
 @dataclass
 class SkillTool:
     """Skill 关联的工具定义"""
-    type: str  # "script" 或 "builtin"
-    name: str  # 工具名称或脚本文件名
-    args: Dict[str, Any] = field(default_factory=dict)  # 默认参数
+    type: str
+    name: str
+    args: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SkillResource:
+    """Skill 附带资源索引"""
+    path: str
+    kind: str
+    source: str
+    size_bytes: int
+    loadable: bool
+    executable: bool
 
 
 @dataclass
@@ -27,24 +42,19 @@ class SkillIndex:
     """轻量级 skill 索引，用于注入 System Prompt"""
     name: str
     description: str
-    folder_name: str  # 文件夹名称，用于后续加载完整内容（必须放在有默认值的字段之前）
-    trigger_words: TriggerWords = field(default_factory=TriggerWords)
-    trigger_condition: Optional[str] = None  # TRIGGER when 条件
-    skip_condition: Optional[str] = None     # SKIP 条件
-    workflow: bool = False                   # 是否为工作流型 skill
-    references: List[str] = field(default_factory=list)  # 引用的额外文档
-    tools: List[SkillTool] = field(default_factory=list) # 关联的工具
+    folder_name: str
+    entry_file: str = "SKILL.md"
+    references: List[str] = field(default_factory=list)
+    tools: List[SkillTool] = field(default_factory=list)
+    resources: List[SkillResource] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def parse_frontmatter(content: str) -> dict:
-    """
-    解析 SKILL.md 的 YAML frontmatter。
-    格式：--- 开头和结尾的 YAML 块
-    """
+    """解析 SKILL.md 的 YAML frontmatter。"""
     if not content.startswith("---"):
         return {}
 
-    # 找到第二个 --- 的位置
     parts = content.split("---", 2)
     if len(parts) < 3:
         return {}
@@ -56,11 +66,176 @@ def parse_frontmatter(content: str) -> dict:
         return {}
 
 
+def _normalize_resource_path(resource_path: str) -> Optional[str]:
+    if not isinstance(resource_path, str):
+        return None
+
+    clean_path = resource_path.strip()
+    if not clean_path or clean_path.startswith("#"):
+        return None
+
+    clean_path = urllib.parse.unquote(clean_path.split("#", 1)[0].strip())
+    if not clean_path or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", clean_path):
+        return None
+
+    if clean_path.startswith("<") and clean_path.endswith(">"):
+        clean_path = clean_path[1:-1]
+
+    clean_path = clean_path.replace("\\", "/")
+    if os.path.isabs(clean_path):
+        return None
+
+    normalized = os.path.normpath(clean_path).replace("\\", "/")
+    if normalized == "." or normalized.startswith("../") or normalized == "..":
+        return None
+    return normalized
+
+
+def resolve_skill_resource_path(skill_dir: str, resource_path: str) -> Optional[str]:
+    """安全解析 skill 内资源路径。"""
+    normalized = _normalize_resource_path(resource_path)
+    if not normalized:
+        return None
+
+    base = os.path.realpath(skill_dir)
+    target = os.path.realpath(os.path.join(skill_dir, normalized))
+    try:
+        if os.path.commonpath([base, target]) != base:
+            return None
+    except ValueError:
+        return None
+    return target
+
+
+def _relative_resource_path(skill_dir: str, absolute_path: str) -> str:
+    return os.path.relpath(os.path.realpath(absolute_path), os.path.realpath(skill_dir)).replace(os.sep, "/")
+
+
+def _classify_resource(relative_path: str) -> tuple[str, bool, bool]:
+    lower_path = relative_path.lower()
+    _, ext = os.path.splitext(lower_path)
+
+    if os.path.basename(lower_path).startswith("license"):
+        kind = "license"
+    elif ext in {".md", ".markdown"}:
+        kind = "markdown"
+    elif ext in SCRIPT_EXTENSIONS:
+        kind = "script"
+    elif lower_path.startswith("assets/"):
+        kind = "asset"
+    else:
+        kind = "other"
+
+    loadable = ext in TEXT_RESOURCE_EXTENSIONS or kind in {"markdown", "license"}
+    executable = ext in SCRIPT_EXTENSIONS
+    return kind, loadable, executable
+
+
+def _is_ignored_resource(path: str) -> bool:
+    parts = path.replace("\\", "/").split("/")
+    return any(part in IGNORED_RESOURCE_NAMES or part == "__pycache__" or part.startswith(".") for part in parts)
+
+
+def _extract_markdown_links(content: str) -> List[str]:
+    links = []
+    for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", content):
+        raw_link = match.group(1).strip()
+        if not raw_link:
+            continue
+        if " " in raw_link and not os.path.exists(raw_link):
+            raw_link = raw_link.split()[0]
+        normalized = _normalize_resource_path(raw_link.strip('"\''))
+        if normalized:
+            links.append(normalized)
+    return links
+
+
+def discover_skill_resources(skill_dir: str, main_content: str, frontmatter: dict) -> List[SkillResource]:
+    """发现官方 Claude Code Skill 的附带资源。"""
+    resources: Dict[str, SkillResource] = {}
+
+    def add_resource(relative_path: str, source: str):
+        normalized = _normalize_resource_path(relative_path)
+        if not normalized or _is_ignored_resource(normalized):
+            return
+
+        absolute_path = resolve_skill_resource_path(skill_dir, normalized)
+        if not absolute_path or not os.path.isfile(absolute_path):
+            return
+
+        canonical_rel = _relative_resource_path(skill_dir, absolute_path)
+        if _is_ignored_resource(canonical_rel) or canonical_rel in resources:
+            return
+
+        kind, loadable, executable = _classify_resource(canonical_rel)
+        resources[canonical_rel] = SkillResource(
+            path=canonical_rel,
+            kind=kind,
+            source=source,
+            size_bytes=os.path.getsize(absolute_path),
+            loadable=loadable,
+            executable=executable
+        )
+
+    references = frontmatter.get("references", []) if isinstance(frontmatter, dict) else []
+    if isinstance(references, str):
+        references = [references]
+    if isinstance(references, list):
+        for ref in references:
+            if isinstance(ref, str):
+                add_resource(ref, "frontmatter")
+
+    for link in _extract_markdown_links(main_content):
+        add_resource(link, "markdown_link")
+
+    for dirname in CONVENTIONAL_RESOURCE_DIRS:
+        root = os.path.join(skill_dir, dirname)
+        if not os.path.isdir(root):
+            continue
+        for current_root, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if not _is_ignored_resource(d)]
+            for filename in files:
+                rel_path = _relative_resource_path(skill_dir, os.path.join(current_root, filename))
+                add_resource(rel_path, "conventional_dir")
+
+    try:
+        for filename in os.listdir(skill_dir):
+            if _is_ignored_resource(filename):
+                continue
+            file_path = os.path.join(skill_dir, filename)
+            if not os.path.isfile(file_path):
+                continue
+            lower_name = filename.lower()
+            if lower_name in {"skill.md", "readme.md"}:
+                continue
+            if lower_name.startswith("license") or lower_name.endswith((".md", ".markdown")):
+                add_resource(filename, "root_file")
+    except OSError:
+        pass
+
+    return sorted(resources.values(), key=lambda resource: resource.path)
+
+
+def _parse_tools(frontmatter: dict) -> List[SkillTool]:
+    tools = []
+    raw_tools = frontmatter.get("tools", [])
+    if not isinstance(raw_tools, list):
+        return tools
+
+    for tool_def in raw_tools:
+        if isinstance(tool_def, dict):
+            tool_type = str(tool_def.get("type", "builtin"))
+            tool_name = tool_def.get("name") or tool_def.get("script") or tool_def.get("builtin", "")
+            tool_args = tool_def.get("args", {})
+            if tool_name:
+                tools.append(SkillTool(type=tool_type, name=str(tool_name), args=tool_args if isinstance(tool_args, dict) else {}))
+        elif isinstance(tool_def, str):
+            tools.append(SkillTool(type="script", name=tool_def))
+    return tools
+
+
 def scan_skill_index() -> List[SkillIndex]:
-    """
-    第一阶段：扫描所有 skill，生成轻量索引。
-    只读取 name、description、trigger_words、trigger_condition 等，用于注入 System Prompt。
-    """
+    """第一阶段：扫描所有 skill，生成轻量索引。"""
     skill_indices: List[SkillIndex] = []
 
     if not os.path.exists(SKILLS_DIR):
@@ -71,9 +246,11 @@ def scan_skill_index() -> List[SkillIndex]:
         if not os.path.isdir(folder_path):
             continue
 
-        md_path = os.path.join(folder_path, "SKILL.md")
+        entry_file = "SKILL.md"
+        md_path = os.path.join(folder_path, entry_file)
         if not os.path.exists(md_path):
-            md_path = os.path.join(folder_path, "README.md")
+            entry_file = "README.md"
+            md_path = os.path.join(folder_path, entry_file)
 
         if not os.path.exists(md_path):
             continue
@@ -84,66 +261,31 @@ def scan_skill_index() -> List[SkillIndex]:
 
             frontmatter = parse_frontmatter(content)
 
-            # 解析 name
             raw_name = frontmatter.get("name", item)
-            if isinstance(raw_name, str):
-                name = raw_name.strip()
-            else:
-                name = item
+            name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else item
 
-            # 解析 description
             raw_desc = frontmatter.get("description", f"提供 {name} 相关功能")
-            if isinstance(raw_desc, str):
-                description = raw_desc.strip()
-            else:
-                description = str(raw_desc)
+            description = raw_desc.strip() if isinstance(raw_desc, str) else str(raw_desc)
 
-            # 解析 trigger_words（支持对象格式和简单列表格式）
-            trigger_words = TriggerWords()
-            tw_data = frontmatter.get("trigger_words", {})
-
-            if isinstance(tw_data, dict):
-                # 对象格式：{ exact: [...], fuzzy: [...] }
-                trigger_words.exact = tw_data.get("exact", [])
-                trigger_words.fuzzy = tw_data.get("fuzzy", [])
-            elif isinstance(tw_data, list):
-                # 简单列表格式：全部作为 fuzzy 触发词
-                trigger_words.fuzzy = tw_data
-
-            # 解析新增字段
-            trigger_condition = frontmatter.get("trigger_condition", None)
-            skip_condition = frontmatter.get("skip_condition", None)
-            workflow = frontmatter.get("workflow", False)
-
-            # 解析 references
             references = frontmatter.get("references", [])
             if isinstance(references, str):
                 references = [references]
+            elif not isinstance(references, list):
+                references = []
+            references = [ref for ref in references if isinstance(ref, str)]
 
-            # 解析 tools
-            tools = []
-            raw_tools = frontmatter.get("tools", [])
-            if isinstance(raw_tools, list):
-                for tool_def in raw_tools:
-                    if isinstance(tool_def, dict):
-                        tool_type = tool_def.get("type", "builtin")
-                        tool_name = tool_def.get("name") or tool_def.get("script") or tool_def.get("builtin", "")
-                        tool_args = tool_def.get("args", None)
-                        tools.append(SkillTool(type=tool_type, name=tool_name, args=tool_args))
-                    elif isinstance(tool_def, str):
-                        # 简单格式：直接是脚本名
-                        tools.append(SkillTool(type="script", name=tool_def))
+            standard_fields = {"name", "description", "references", "tools"}
+            metadata = {key: value for key, value in frontmatter.items() if key not in standard_fields} if isinstance(frontmatter, dict) else {}
 
             skill_indices.append(SkillIndex(
                 name=name,
                 description=description,
-                trigger_words=trigger_words,
-                trigger_condition=trigger_condition,
-                skip_condition=skip_condition,
-                workflow=workflow,
+                folder_name=item,
+                entry_file=entry_file,
                 references=references,
-                tools=tools,
-                folder_name=item
+                tools=_parse_tools(frontmatter),
+                resources=discover_skill_resources(folder_path, content, frontmatter),
+                metadata=metadata
             ))
 
         except Exception as e:
@@ -152,42 +294,25 @@ def scan_skill_index() -> List[SkillIndex]:
     return skill_indices
 
 
-def load_skill_content(skill_name: str) -> str:
-    """
-    第二阶段：按需加载某个 skill 的完整 SKILL.md 内容。
-
-    参数:
-        skill_name: skill 的 name 字段（来自索引）
-
-    返回:
-        完整的 SKILL.md 内容（不截断）
-    """
-    if not os.path.exists(SKILLS_DIR):
-        return f"错误：技能目录不存在。"
-
-    # 先通过索引查找匹配的 folder_name
+def _find_skill(skill_name: str) -> Optional[SkillIndex]:
     skill_indices = scan_skill_index()
-    matched_folder = None
-
     for idx in skill_indices:
-        if idx.name == skill_name:
-            matched_folder = idx.folder_name
-            break
+        if idx.name == skill_name or idx.folder_name == skill_name:
+            return idx
+    return None
 
-    if not matched_folder:
-        # 尝试直接用 skill_name 作为文件夹名
-        potential_path = os.path.join(SKILLS_DIR, skill_name)
-        if os.path.isdir(potential_path):
-            matched_folder = skill_name
 
-    if not matched_folder:
-        available_names = [idx.name for idx in skill_indices]
+def load_skill_content(skill_name: str) -> str:
+    """第二阶段：按需加载某个 skill 的完整 SKILL.md 内容。"""
+    if not os.path.exists(SKILLS_DIR):
+        return "错误：技能目录不存在。"
+
+    skill_index = _find_skill(skill_name)
+    if not skill_index:
+        available_names = [idx.name for idx in scan_skill_index()]
         return f"错误：未找到名为 '{skill_name}' 的 skill。可用的 skill：{', '.join(available_names)}"
 
-    md_path = os.path.join(SKILLS_DIR, matched_folder, "SKILL.md")
-    if not os.path.exists(md_path):
-        md_path = os.path.join(SKILLS_DIR, matched_folder, "README.md")
-
+    md_path = os.path.join(SKILLS_DIR, skill_index.folder_name, skill_index.entry_file)
     if not os.path.exists(md_path):
         return f"错误：skill '{skill_name}' 没有 SKILL.md 或 README.md 文件。"
 
@@ -198,11 +323,36 @@ def load_skill_content(skill_name: str) -> str:
         return f"错误：读取 skill '{skill_name}' 内容失败：{str(e)}"
 
 
-def get_skill_index_text() -> str:
-    """
-    生成用于注入 System Prompt 的 skill 索引文本。
-    格式化输出，方便 LLM 快速浏览。
-    """
+def _truncate_text(text: str, max_chars: int) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= max_chars:
+        return single_line
+    return single_line[:max_chars].rstrip() + "..."
+
+
+def _format_resource_summary(resources: List[SkillResource]) -> str:
+    if not resources:
+        return "none"
+
+    markdown = [resource.path for resource in resources if resource.kind == "markdown"]
+    scripts = [resource.path for resource in resources if resource.kind == "script"]
+    assets = [resource.path for resource in resources if resource.kind == "asset"]
+    others = [resource.path for resource in resources if resource.kind not in {"markdown", "script", "asset"}]
+
+    parts = []
+    if markdown:
+        parts.append("markdown: " + ", ".join(markdown[:5]) + ("..." if len(markdown) > 5 else ""))
+    if scripts:
+        parts.append("scripts: " + ", ".join(scripts[:5]) + ("..." if len(scripts) > 5 else ""))
+    if assets:
+        parts.append(f"assets: {len(assets)} file(s)")
+    if others:
+        parts.append("other: " + ", ".join(others[:3]) + ("..." if len(others) > 3 else ""))
+    return "; ".join(parts) if parts else "none"
+
+
+def get_skill_index_text(max_description_chars: int = 800, include_resources: bool = True) -> str:
+    """生成用于注入 System Prompt 的 skill 索引文本。"""
     skill_indices = scan_skill_index()
 
     if not skill_indices:
@@ -210,60 +360,63 @@ def get_skill_index_text() -> str:
 
     lines = []
     for idx in skill_indices:
-        # 构建触发词展示
-        triggers = []
-        if idx.trigger_words.exact:
-            triggers.append(f"精确: {', '.join(idx.trigger_words.exact[:3])}")
-        if idx.trigger_words.fuzzy:
-            triggers.append(f"模糊: {', '.join(idx.trigger_words.fuzzy[:3])}")
-        trigger_text = " | ".join(triggers) if triggers else "无触发词"
+        lines.append(f"- Skill: {idx.name}")
+        lines.append(f"  Description: {_truncate_text(idx.description, max_description_chars)}")
 
-        # 截断 description 到 80 字符
-        short_desc = idx.description[:80] + "..." if len(idx.description) > 80 else idx.description
+        if idx.tools:
+            tool_text = ", ".join(f"{tool.type}: {tool.name}" for tool in idx.tools[:5])
+            if len(idx.tools) > 5:
+                tool_text += "..."
+            lines.append(f"  Tools: {tool_text}")
 
-        # 标记工作流型
-        workflow_tag = " [工作流]" if idx.workflow else ""
-
-        lines.append(f"- **{idx.name}**{workflow_tag}: {short_desc} ({trigger_text})")
+        if include_resources:
+            lines.append(f"  Resources: {_format_resource_summary(idx.resources)}")
 
     return "\n".join(lines)
 
 
 def get_skill_dir(skill_name: str) -> Optional[str]:
-    """
-    获取 skill 的目录路径。
-    """
-    skill_indices = scan_skill_index()
-    for idx in skill_indices:
-        if idx.name == skill_name:
-            return os.path.join(SKILLS_DIR, idx.folder_name)
+    """获取 skill 的目录路径。"""
+    skill = _find_skill(skill_name)
+    if skill:
+        return os.path.join(SKILLS_DIR, skill.folder_name)
     return None
 
 
+def _format_resource_list(resources: List[SkillResource]) -> str:
+    if not resources:
+        return "无附带资源。"
+
+    lines = ["Bundled Resources:"]
+    for resource in resources:
+        flags = []
+        if resource.loadable:
+            flags.append("loadable")
+        if resource.executable:
+            flags.append("executable")
+        flag_text = f"; {', '.join(flags)}" if flags else ""
+        lines.append(f"- {resource.path} ({resource.kind}; {resource.size_bytes} bytes; source={resource.source}{flag_text})")
+    lines.append("To read a resource, call load_skill_resource(skill_name, resource_path).")
+    lines.append("To execute a script, call execute_skill_script(skill_name, script_name, script_args).")
+    return "\n".join(lines)
+
+
+def _read_resource_text(skill_dir: str, resource: SkillResource) -> str:
+    resource_path = resolve_skill_resource_path(skill_dir, resource.path)
+    if not resource_path:
+        raise ValueError("资源路径不安全")
+    with open(resource_path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
 def load_skill_full(skill_name: str) -> str:
-    """
-    三段式加载：索引 → 内容 → 引用资源
-
-    参数:
-        skill_name: skill 的 name 字段
-
-    返回:
-        完整内容（SKILL.md + 引用的额外文档）
-    """
-    # 第二段：加载 SKILL.md
+    """三段式加载：索引 → 内容 → 资源清单与有限引用资源。"""
     main_content = load_skill_content(skill_name)
 
     if main_content.startswith("错误"):
         return main_content
 
-    # 第三段：加载引用资源
-    skill_indices = scan_skill_index()
-    skill_index = None
-    for idx in skill_indices:
-        if idx.name == skill_name:
-            skill_index = idx
-            break
-
+    skill_index = _find_skill(skill_name)
     if not skill_index:
         return main_content
 
@@ -271,148 +424,109 @@ def load_skill_full(skill_name: str) -> str:
     if not skill_dir:
         return main_content
 
-    references_content = ""
-    for ref_file in skill_index.references:
-        ref_path = os.path.join(skill_dir, ref_file)
-        if os.path.exists(ref_path):
-            try:
-                with open(ref_path, "r", encoding="utf-8") as f:
-                    ref_content = f.read()
-                references_content += f"\n\n---\n## [{ref_file}]\n\n{ref_content}"
-            except Exception as e:
-                references_content += f"\n\n---\n## [{ref_file}]\n（加载失败: {str(e)}）"
+    output_parts = [main_content, "\n\n---\n## Bundled Resources\n\n" + _format_resource_list(skill_index.resources)]
 
-    return main_content + references_content
+    auto_paths = []
+    for ref in skill_index.references:
+        normalized = _normalize_resource_path(ref)
+        if normalized and normalized not in auto_paths:
+            auto_paths.append(normalized)
+    for resource in skill_index.resources:
+        if resource.source == "markdown_link" and resource.kind == "markdown" and resource.path not in auto_paths:
+            auto_paths.append(resource.path)
 
+    loaded_count = 0
+    loaded_bytes = 0
+    skipped = []
+    resource_map = {resource.path: resource for resource in skill_index.resources}
 
-def match_condition(condition: str, text: str) -> bool:
-    """
-    匹配 TRIGGER/SKILL 条件。
-
-    支持的格式：
-    - "TRIGGER when: 用户输入包含关键词 X"
-    - "用户输入包含 X" → 检查文本是否包含 X
-    - "TRIGGER when: 用户输入包含 天气 或 多少度 或 下雨" → 检查是否包含任一关键词
-    - 正则表达式：r"pattern"
-
-    Returns:
-        True 表示条件匹配
-    """
-    if not condition:
-        return False
-
-    # 提取条件内容（去掉 "TRIGGER when:" 或 "SKIP:" 前缀）
-    condition_clean = condition.strip()
-    for prefix in ["TRIGGER when:", "TRIGGER:", "SKIP:", "when:"]:
-        if condition_clean.startswith(prefix):
-            condition_clean = condition_clean[len(prefix):].strip()
-            break
-
-    # 检查是否是正则表达式
-    if condition_clean.startswith("r\"") or condition_clean.startswith("r'"):
-        try:
-            pattern = condition_clean[2:-1]  # 去掉 r" 和 "
-            if re.search(pattern, text, re.IGNORECASE):
-                return True
-        except re.error:
-            pass
-
-    # 解析 "用户输入包含 X 或 Y 或 Z" 格式
-    # 提取关键词列表
-    text_lower = text.lower()
-
-    # 查找 "包含" 后面的内容
-    if "包含" in condition_clean:
-        # 提取关键词部分
-        parts = condition_clean.split("包含")
-        if len(parts) >= 2:
-            keywords_part = parts[-1].strip()
-            # 解析 "或" 分隔的关键词
-            keywords = re.split(r'\s+或\s+', keywords_part)
-            for keyword in keywords:
-                keyword = keyword.strip()
-                if keyword and keyword.lower() in text_lower:
-                    return True
-
-    # 直接关键词匹配
-    if condition_clean.lower() in text_lower:
-        return True
-
-    # import 匹配
-    if "import" in condition_clean.lower():
-        if condition_clean.lower() in text_lower:
-            return True
-
-    return False
-
-
-def match_trigger_words(trigger_words: TriggerWords, text: str) -> bool:
-    """
-    匹配触发词（兼容旧格式）。
-    """
-    text_lower = text.lower()
-
-    # 精确触发词：必须完全匹配
-    for exact_word in trigger_words.exact:
-        if exact_word.lower() == text_lower.strip():
-            return True
-
-    # 模糊触发词：包含即可
-    for fuzzy_word in trigger_words.fuzzy:
-        if fuzzy_word.lower() in text_lower:
-            return True
-
-    return False
-
-
-def detect_trigger_skills(user_input: str) -> List[SkillIndex]:
-    """
-    检测用户输入中触发的 skill。
-
-    优先级：
-    1. skip_condition 优先检查（如果匹配则跳过）
-    2. trigger_condition 检查
-    3. trigger_words 检查（兼容旧格式）
-
-    Returns:
-        触发的 skill 索引列表
-    """
-    triggered = []
-    skill_indices = scan_skill_index()
-
-    for skill in skill_indices:
-        # 1. 检查 skip_condition（优先）
-        if skill.skip_condition and match_condition(skill.skip_condition, user_input):
-            continue  # 跳过此 skill
-
-        # 2. 检查 trigger_condition
-        if skill.trigger_condition:
-            if match_condition(skill.trigger_condition, user_input):
-                triggered.append(skill)
+    for path in auto_paths:
+        resource = resource_map.get(path)
+        if not resource:
+            resource_path = resolve_skill_resource_path(skill_dir, path)
+            if not resource_path or not os.path.isfile(resource_path):
                 continue
+            kind, loadable, executable = _classify_resource(path)
+            resource = SkillResource(path=path, kind=kind, source="frontmatter", size_bytes=os.path.getsize(resource_path), loadable=loadable, executable=executable)
 
-        # 3. 检查 trigger_words（兼容旧格式）
-        if match_trigger_words(skill.trigger_words, user_input):
-            triggered.append(skill)
+        if resource.kind != "markdown" and resource.path not in skill_index.references:
+            continue
+        if not resource.loadable:
+            skipped.append(f"{resource.path}: not a text resource")
+            continue
+        if loaded_count >= MAX_AUTO_REFERENCE_FILES:
+            skipped.append(f"{resource.path}: auto-load file count limit reached")
+            continue
+        if resource.size_bytes > MAX_AUTO_REFERENCE_BYTES_PER_FILE:
+            skipped.append(f"{resource.path}: too large for auto-load ({resource.size_bytes} bytes)")
+            continue
+        if loaded_bytes + resource.size_bytes > MAX_AUTO_REFERENCE_TOTAL_BYTES:
+            skipped.append(f"{resource.path}: total auto-load size limit reached")
+            continue
 
-    return triggered
+        try:
+            ref_content = _read_resource_text(skill_dir, resource)
+            output_parts.append(f"\n\n---\n## Auto-loaded resource: {resource.path}\n\n{ref_content}")
+            loaded_count += 1
+            loaded_bytes += resource.size_bytes
+        except Exception as e:
+            output_parts.append(f"\n\n---\n## Auto-loaded resource: {resource.path}\n（加载失败: {str(e)}）")
+
+    if skipped:
+        output_parts.append("\n\n---\n## Resources not auto-loaded\n\n" + "\n".join(f"- {item}. Use load_skill_resource to read it if needed." for item in skipped))
+
+    return "".join(output_parts)
+
+
+def list_skill_resources(skill_name: str) -> str:
+    """列出某个 skill 的附带资源。"""
+    skill = _find_skill(skill_name)
+    if not skill:
+        return f"错误：未找到 skill '{skill_name}'"
+    return _format_resource_list(skill.resources)
+
+
+def load_skill_resource(skill_name: str, resource_path: str) -> str:
+    """读取 skill 目录内的指定资源。"""
+    skill = _find_skill(skill_name)
+    if not skill:
+        return f"错误：未找到 skill '{skill_name}'"
+
+    skill_dir = get_skill_dir(skill_name)
+    if not skill_dir:
+        return f"错误：未找到 skill '{skill_name}' 的目录"
+
+    absolute_path = resolve_skill_resource_path(skill_dir, resource_path)
+    if not absolute_path:
+        return "错误：资源路径不安全。请使用 skill 目录内的相对路径。"
+    if not os.path.exists(absolute_path):
+        return f"错误：资源 '{resource_path}' 不存在。"
+    if os.path.isdir(absolute_path):
+        return f"错误：资源 '{resource_path}' 是目录，不能直接读取。"
+
+    canonical_path = _relative_resource_path(skill_dir, absolute_path)
+    size_bytes = os.path.getsize(absolute_path)
+    kind, loadable, _ = _classify_resource(canonical_path)
+    if not loadable:
+        return f"资源 '{canonical_path}' 是 {kind} 类型，大小 {size_bytes} bytes，不适合以内联文本方式读取。"
+    if size_bytes > MAX_RESOURCE_READ_BYTES:
+        return f"错误：资源 '{canonical_path}' 过大（{size_bytes} bytes），超过单次读取上限 {MAX_RESOURCE_READ_BYTES} bytes。"
+
+    try:
+        with open(absolute_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return f"# Resource: {canonical_path}\n\n{content}"
+    except Exception as e:
+        return f"错误：读取资源 '{canonical_path}' 失败：{str(e)}"
 
 
 def get_skill_by_name(skill_name: str) -> Optional[SkillIndex]:
-    """
-    通过 name 获取 skill 索引。
-    """
-    skill_indices = scan_skill_index()
-    for idx in skill_indices:
-        if idx.name == skill_name:
-            return idx
-    return None
+    """通过 name 获取 skill 索引。"""
+    return _find_skill(skill_name)
 
 
 def get_skill_tools(skill_name: str) -> List[SkillTool]:
-    """
-    获取 skill 关联的工具列表。
-    """
+    """获取 skill 关联的工具列表。"""
     skill = get_skill_by_name(skill_name)
     if skill:
         return skill.tools

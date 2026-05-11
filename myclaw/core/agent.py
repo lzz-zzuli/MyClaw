@@ -120,6 +120,12 @@ def create_agent_app(
                 if content:
                     profile_content = content
 
+        latest_user_text = ""
+        for msg in reversed(final_msgs):
+            if isinstance(msg, HumanMessage) and isinstance(msg.content, str):
+                latest_user_text = msg.content.strip()
+                break
+
         # 获取 skill 索引
         skill_index_text = get_skill_index_text()
 
@@ -127,12 +133,6 @@ def create_agent_app(
         profile_text = f"\n=============================\n【用户长期画像】\n{profile_content}\n=============================\n"
 
         # 构建知识库上下文
-        latest_user_text = ""
-        for msg in reversed(final_msgs):
-            if isinstance(msg, HumanMessage) and isinstance(msg.content, str):
-                latest_user_text = msg.content.strip()
-                break
-
         memory_notes = get_relevant_memory_notes(
             query=latest_user_text,
             summary=active_summary,
@@ -157,7 +157,14 @@ def create_agent_app(
                 + "\n=============================\n"
             )
         # 构建 Skill 索引文本
-        skill_text = f"\n=============================\n【可用 Skill 索引】\n以下 skill 可按需加载完整内容。当你判断需要某个 skill 时，调用 load_skill 工具。\n{skill_index_text}\n=============================\n"
+        skill_text = (
+            "\n=============================\n"
+            "【可用 Skill 索引】\n"
+            "以下 skill 可按需加载完整内容。Skill 是否适用只由 name 和 description 判断；当用户任务匹配某个 skill 的 description 时，调用 load_skill 工具。\n"
+            "加载 SKILL.md 后，如正文要求读取附加文档或资源（如 editing.md、references/*.md、scripts/*.py），按需调用 list_skill_resources、load_skill_resource 或 execute_skill_script。\n"
+            f"{skill_index_text}\n"
+            "=============================\n"
+        )
 
         # 构建上下文摘要文本
         summary_text = ""

@@ -11,6 +11,26 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 class TestAgent(unittest.TestCase):
 
+    def test_agent_source_mentions_description_first_skill_triggering(self):
+        """测试 Agent 的 Skill 提示包含 description-first 触发机制和资源工具"""
+        import inspect
+        import myclaw.core.agent as agent_module
+
+        source = inspect.getsource(agent_module.create_agent_app)
+        self.assertIn("Skill 是否适用只由 name 和 description 判断", source)
+        self.assertIn("list_skill_resources", source)
+        self.assertIn("load_skill_resource", source)
+        self.assertNotIn("detect_skill_candidates", source)
+
+    def test_prompt_templates_mention_description_first_skill_triggering(self):
+        """测试人设模板不再只依赖触发词"""
+        prompt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "myclaw", "core", "prompts"))
+        for filename in ["default.md", "professional.md", "friendly.md"]:
+            with open(os.path.join(prompt_dir, filename), "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("description", content)
+            self.assertIn("load_skill", content)
+
     def test_agent_state_initialization(self):
         """测试 AgentState 的初始化"""
         from myclaw.core.context import AgentState

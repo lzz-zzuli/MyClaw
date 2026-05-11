@@ -6,7 +6,15 @@ import uuid
 import threading
 import yaml
 from ..config import MEMORY_DIR, KNOWLEDGE_DIR, KNOWLEDGE_INDEX_FILE, TASKS_FILE
-from ..skill_loader import load_skill_content, load_skill_full, get_skill_dir, get_skill_by_name
+from ..skill_loader import (
+    load_skill_content,
+    load_skill_full,
+    get_skill_dir,
+    get_skill_by_name,
+    load_skill_resource as load_skill_resource_content,
+    list_skill_resources as list_skill_resources_content,
+    resolve_skill_resource_path,
+)
 from .sandbox_tools import (
     list_office_files,
     read_office_file,
@@ -817,21 +825,38 @@ def load_skill(skill_name: str, full: bool = True) -> str:
 
     使用场景：
     1. 你已从 System Prompt 中的 skill 索引看到可用的 skill 列表
-    2. 用户的问题与某个 skill 的触发词相关（如提到"毛泽东"、"毛选"等）
-    3. 你判断需要深入了解该 skill 的方法论或工具
+    2. 用户任务匹配某个 skill 的 name 或 description
+    3. 你判断需要深入了解该 skill 的方法论、工作流或资源
 
     参数:
         skill_name: skill 的 name 字段（来自索引列表）
-        full: 是否加载完整内容（包含引用资源）。默认 True。
+        full: 是否加载完整内容（包含资源清单和有限引用资源）。默认 True。
 
     返回:
-        skill 的完整内容（SKILL.md + 引用的额外文档）
+        skill 的完整内容（SKILL.md + 资源清单 + 自动加载的引用文档）
     """
     if full:
         return load_skill_full(skill_name)
     else:
-        # 只加载 SKILL.md，不加载引用资源
         return load_skill_content(skill_name)
+
+
+@my_tool
+def list_skill_resources(skill_name: str) -> str:
+    """
+    列出某个 skill 的附带资源。
+    当 SKILL.md 提到 references、scripts、assets 或其它附加文件时，先用它查看可用资源。
+    """
+    return list_skill_resources_content(skill_name)
+
+
+@my_tool
+def load_skill_resource(skill_name: str, resource_path: str) -> str:
+    """
+    读取 skill 目录内的指定文本资源。
+    适用于官方 Claude Code Skill 的 editing.md、references/*.md、scripts/*.py 等渐进式资源。
+    """
+    return load_skill_resource_content(skill_name, resource_path)
 
 
 import subprocess
@@ -840,46 +865,41 @@ import subprocess
 @my_tool
 def execute_skill_script(skill_name: str, script_name: str, script_args: str = "") -> str:
     """
-    执行 skill 目录下的脚本。
-
-    使用场景：
-    1. 工作流型 skill 定义了关联的脚本工具
-    2. SKILL.md 中指定了如何使用脚本
-    3. 你需要执行脚本来完成任务
-
-    参数:
-        skill_name: skill 的 name 字段
-        script_name: 脚本文件名（如 weather_query.py）
-        script_args: 传递给脚本的参数（如 "北京"）
-
-    返回:
-        脚本的执行结果
+    执行 skill 目录下的脚本，支持根目录脚本和 scripts/... 嵌套脚本。
     """
     skill_dir = get_skill_dir(skill_name)
     if not skill_dir:
         return f"错误：未找到 skill '{skill_name}'"
 
-    script_path = os.path.join(skill_dir, script_name)
+    script_path = resolve_skill_resource_path(skill_dir, script_name)
+    if not script_path:
+        return "错误：脚本路径不安全。请使用 skill 目录内的相对路径。"
     if not os.path.exists(script_path):
         return f"错误：skill '{skill_name}' 下不存在脚本 '{script_name}'"
+    if os.path.isdir(script_path):
+        return f"错误：'{script_name}' 是目录，不能执行。"
 
-    # skill 脚本在 office/skills 目录下，是受信任的沙盒内容
-    # 直接执行，不通过 execute_office_shell（它有 python 黑名单）
+    _, ext = os.path.splitext(script_path.lower())
+    if ext not in {".py", ".sh", ".js", ".ts"}:
+        return f"错误：不支持执行 '{ext or '无后缀'}' 类型的 skill 脚本。"
+
+    relative_script = os.path.relpath(script_path, skill_dir).replace(os.sep, "/")
+
     try:
-        if script_name.endswith(".py"):
-            # 使用 Python 解释器执行
-            cmd = ["python", script_name]
+        if ext == ".py":
+            cmd = ["python", relative_script]
             if script_args:
-                # 将参数按空格分割
                 cmd.extend(script_args.split())
-        elif script_name.endswith(".sh"):
-            cmd = ["./" + script_name]
+        elif ext == ".sh":
+            cmd = ["sh", relative_script]
+            if script_args:
+                cmd.extend(script_args.split())
+        elif ext in {".js", ".ts"}:
+            cmd = ["node", relative_script]
             if script_args:
                 cmd.extend(script_args.split())
         else:
-            cmd = [script_name]
-            if script_args:
-                cmd.extend(script_args.split())
+            return f"错误：不支持执行 '{ext}' 类型的 skill 脚本。"
 
         result = subprocess.run(
             cmd,
@@ -890,7 +910,7 @@ def execute_skill_script(skill_name: str, script_name: str, script_args: str = "
             timeout=30
         )
 
-        output = f"执行脚本: {script_name}\n"
+        output = f"执行脚本: {relative_script}\n"
         output += f"参数: {script_args}\n"
         output += f"退出码: {result.returncode}\n"
 
@@ -908,7 +928,7 @@ def execute_skill_script(skill_name: str, script_name: str, script_args: str = "
         return output
 
     except subprocess.TimeoutExpired:
-        return f"错误：脚本执行超时（30s）"
+        return "错误：脚本执行超时（30s）"
     except Exception as e:
         return f"执行异常：{str(e)}"
 
@@ -933,5 +953,7 @@ BUILTIN_TOOLS = [
     delete_scheduled_task,
     modify_scheduled_task,
     load_skill,
+    list_skill_resources,
+    load_skill_resource,
     execute_skill_script
 ]
