@@ -239,7 +239,7 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
             checkpointer=memory,
             persona_name=persona_name
         )
-        config = {"configurable": {"thread_id": session_id}}
+        config = {"configurable": {"thread_id": session_id}, "recursion_limit": 60}
 
         class SpinnerState:
             action_words = [
