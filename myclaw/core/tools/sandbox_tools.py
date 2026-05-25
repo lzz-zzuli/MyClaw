@@ -160,12 +160,15 @@ def execute_office_shell(command: str) -> str:
     在 office 工位中执行 Shell 命令。
 
     【极其重要的安全限制】：
-    1. 跨平台注意：当前宿主机可能是 Windows、Linux 或 Mac。请根据环境使用对应的原生 Shell 命令。
-    2. 这是一个非交互式终端！所有命令必须携带免确认参数（如 -y, --quiet）。
-    3. 禁止使用 cd 命令跳出当前目录，你的活动范围仅限 office。
-    4. 每次执行都是独立的终端进程。需要进入子目录请使用命令链或相对路径。
-    5. 危险命令黑名单：curl/wget/ssh/kill/sudo 等已被禁止。
-    6. 环境隔离：只保留 PATH/HOME/LANG 等基础环境变量，API Key 等敏感信息不可访问。
+    1. 当前工作目录已经是 office 工位，所有文件路径必须使用相对路径，例如 `ls -la`、`ls *.pptx`、`node script.js`。
+    2. 严禁使用绝对路径，包括 `/Users/.../workspace/office/...`；即使路径位于 office 内也会被拒绝。
+    3. 禁止使用 `..`、`~`、Windows 盘符等目录跳转形式。
+    4. 查看文件优先使用 list_office_files，不要用绝对路径执行 ls。
+    5. 跨平台注意：当前宿主机可能是 Windows、Linux 或 Mac。请根据环境使用对应的原生 Shell 命令。
+    6. 这是一个非交互式终端！所有命令必须携带免确认参数（如 -y, --quiet）。
+    7. 每次执行都是独立的终端进程。需要进入子目录请使用命令链或相对路径。
+    8. 危险命令黑名单：curl/wget/ssh/kill/sudo 等已被禁止。
+    9. 环境隔离：只保留 PATH/HOME/LANG 等基础环境变量，API Key 等敏感信息不可访问。
     """
     try:
         force_execution = command.strip().startswith("!force ")
@@ -175,7 +178,7 @@ def execute_office_shell(command: str) -> str:
         # 1. 检查危险路径模式（路径跳转）
         for pattern in _DANGEROUS_PATH_PATTERNS:
             if re.search(pattern, command):
-                return "❌ 权限拒绝：检测到危险的目录跳转指令。你被禁止离开 office 工位！"
+                return "❌ 权限拒绝：检测到绝对路径或目录跳转。execute_office_shell 的当前目录已经是 office，请改用相对路径，例如 `ls -la`、`ls *.pptx`、`node script.js`。"
 
         # 2. 检查危险命令黑名单（命令注入、外联、权限提升等）
         command_parts = command.strip().split()
