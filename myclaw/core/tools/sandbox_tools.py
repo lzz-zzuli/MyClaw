@@ -17,11 +17,14 @@ _SAFE_ENV_WHITELIST = {
     "SHELL": "/bin/sh",  # 限制为最基础的 shell
 }
 
+# 允许在沙盒内执行脚本的解释器（有条件放行）
+_SAFE_INTERPRETERS = {"python", "python3", "node"}
+
 # 危险命令黑名单（禁止执行的命令）
 _DANGEROUS_COMMANDS = [
     "curl", "wget", "nc", "netcat",     # 网络外联
     "ssh", "scp", "sftp", "rsync",      # 远程连接
-    "python", "python3", "node", "ruby", "perl",  # 解释器（可能逃逸）
+    "ruby", "perl",                     # 非 skill 所需的解释器
     "env", "printenv", "set",           # 环境变量泄露
     "kill", "pkill", "killall",         # 进程操作
     "chmod", "chown", "chgrp",          # 权限篡改
@@ -161,10 +164,14 @@ def execute_office_shell(command: str) -> str:
     2. 这是一个非交互式终端！所有命令必须携带免确认参数（如 -y, --quiet）。
     3. 禁止使用 cd 命令跳出当前目录，你的活动范围仅限 office。
     4. 每次执行都是独立的终端进程。需要进入子目录请使用命令链或相对路径。
-    5. 危险命令黑名单：curl/wget/python/ssh/kill/sudo 等已被禁止。
+    5. 危险命令黑名单：curl/wget/ssh/kill/sudo 等已被禁止。
     6. 环境隔离：只保留 PATH/HOME/LANG 等基础环境变量，API Key 等敏感信息不可访问。
     """
     try:
+        force_execution = command.strip().startswith("!force ")
+        if force_execution:
+            command = command.strip()[7:].strip()
+
         # 1. 检查危险路径模式（路径跳转）
         for pattern in _DANGEROUS_PATH_PATTERNS:
             if re.search(pattern, command):
@@ -174,9 +181,27 @@ def execute_office_shell(command: str) -> str:
         command_parts = command.strip().split()
         if command_parts:
             first_cmd = command_parts[0].lower()
-            for dangerous_cmd in _DANGEROUS_COMMANDS:
-                if first_cmd == dangerous_cmd or first_cmd.startswith(dangerous_cmd + " "):
-                    return f"❌ 权限拒绝：'{first_cmd}' 是危险命令，已被禁止执行！"
+            if first_cmd in _SAFE_INTERPRETERS:
+                if len(command_parts) > 1 and command_parts[1] in {"-c", "-e"}:
+                    return "❌ 权限拒绝：不允许通过 -c/-e 参数执行内联代码！"
+
+                if len(command_parts) > 2 and command_parts[1] == "-m" and not force_execution:
+                    return (
+                        f"⚠️ 解释器模块执行请求：`{command}`\n"
+                        f"该操作将运行模块 `{command_parts[2]}`，请确认无误后重新执行。\n"
+                        f"如需确认执行，可在命令前添加 `!force ` 前缀。"
+                    )
+
+                if len(command_parts) > 1 and not command_parts[1].startswith("-"):
+                    script_file = command_parts[1]
+                    try:
+                        _get_safe_path(script_file)
+                    except PermissionError:
+                        return f"❌ 权限拒绝：脚本 '{script_file}' 不在 office 工位内！"
+            else:
+                for dangerous_cmd in _DANGEROUS_COMMANDS:
+                    if first_cmd == dangerous_cmd or first_cmd.startswith(dangerous_cmd + " "):
+                        return f"❌ 权限拒绝：'{first_cmd}' 是危险命令，已被禁止执行！"
 
         # 3. 使用安全的环境变量白名单（防止敏感信息泄露）
         safe_env = _SAFE_ENV_WHITELIST.copy()
