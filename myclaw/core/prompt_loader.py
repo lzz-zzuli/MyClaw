@@ -12,6 +12,15 @@ PLACEHOLDER_USER_PROFILE = "{{USER_PROFILE}}"
 PLACEHOLDER_CONTEXT_SUMMARY = "{{CONTEXT_SUMMARY}}"
 PLACEHOLDER_KNOWLEDGE_CONTEXT = "{{KNOWLEDGE_CONTEXT}}"
 
+# 全局指令（在所有模板末尾统一追加）
+GLOBAL_APPENDIX = """
+【任务目录规范 (TASK FOLDER)】
+创建文档（Word、PPT 等）时，必须先调用 'start_task_folder' 创建任务目录，然后在任务目录下进行所有操作（解压、编辑、打包等）。这样可以保持 office 工位整洁，也便于后续清理中间文件。
+- 任务目录格式：tasks/task-YYYY-MM-DD-NNN
+- 所有中间文件和最终产物都放在任务目录下
+- 不要在 office 根目录直接操作文件
+"""
+
 
 @dataclass
 class PersonaMeta:
@@ -108,6 +117,9 @@ def build_system_prompt(
     prompt = prompt.replace(PLACEHOLDER_USER_PROFILE, user_profile)
     prompt = prompt.replace(PLACEHOLDER_CONTEXT_SUMMARY, context_summary)
     prompt = prompt.replace(PLACEHOLDER_KNOWLEDGE_CONTEXT, knowledge_context)
+
+    # 追加全局指令（所有模板共享）
+    prompt += GLOBAL_APPENDIX
 
     return prompt
 

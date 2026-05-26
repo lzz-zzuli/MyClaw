@@ -4,6 +4,7 @@ from .base import my_tool
 from ..config import OFFICE_DIR
 import re
 import platform
+from datetime import datetime
 
 SYS_OS = platform.system()
 
@@ -65,6 +66,45 @@ def _get_safe_path(relative_path: str) -> str:
         raise PermissionError(f"越权拦截：你试图访问沙盒外的路径 '{relative_path}'！你只能在 office 工位内活动。")
 
     return target_path
+
+
+@my_tool
+def start_task_folder(task_type: str = "") -> str:
+    """
+    创建任务工作目录，所有文档创建/编辑操作都应在该目录下进行。
+
+    参数:
+        task_type: 任务类型描述，如 "create-docx"、"create-pptx"、"edit-docx" 等。
+                   可以为空，目录名会自动生成。
+
+    返回:
+        任务文件夹路径（相对于 office 工位），格式为 tasks/task-YYYY-MM-DD-NNN。
+        示例: tasks/task-2026-05-27-001
+
+    使用场景:
+        当你需要创建 Word 文档、PPT 或编辑现有文档时，先调用此工具创建任务目录，
+        然后在该目录下进行所有操作（解压、修改、打包等）。
+    """
+    try:
+        tasks_dir = _get_safe_path("tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # 查找当天已有的任务序号
+        existing_dirs = [d for d in os.listdir(tasks_dir)
+                        if d.startswith(f"task-{today}-")]
+        seq = len(existing_dirs) + 1
+
+        folder_name = f"task-{today}-{seq:03d}"
+        folder_path = os.path.join(tasks_dir, folder_name)
+        os.makedirs(folder_path, exist_ok=True)
+
+        task_desc = f" ({task_type})" if task_type else ""
+        return f"✅ 任务目录已创建：{folder_name}{task_desc}\n所有操作请在该目录下进行。"
+
+    except Exception as e:
+        return f"❌ 创建任务目录失败：{str(e)}"
 
 
 @my_tool

@@ -19,7 +19,8 @@ from .sandbox_tools import (
     list_office_files,
     read_office_file,
     write_office_file,
-    execute_office_shell
+    execute_office_shell,
+    start_task_folder
 )
 
 
@@ -947,6 +948,7 @@ BUILTIN_TOOLS = [
     read_office_file,
     write_office_file,
     execute_office_shell,
+    start_task_folder,
     get_system_model_info,
     schedule_task,
     list_scheduled_tasks,
