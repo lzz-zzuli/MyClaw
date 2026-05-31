@@ -78,5 +78,41 @@ class TestLoopDetection(unittest.TestCase):
         self.assertEqual(result, "normal")
 
 
+class TestAgentNodeIteration(unittest.TestCase):
+
+    def test_update_loop_tracking_new_tool(self):
+        """切换到新工具时，重置 repeated_count"""
+        from myclaw.core.agent import update_loop_tracking
+        new_name, new_count = update_loop_tracking(
+            current_tool_name="read_file",
+            prev_tool_name="load_skill",
+            prev_count=3
+        )
+        self.assertEqual(new_name, "read_file")
+        self.assertEqual(new_count, 1)
+
+    def test_update_loop_tracking_same_tool(self):
+        """重复调用同一工具时，repeated_count 递增"""
+        from myclaw.core.agent import update_loop_tracking
+        new_name, new_count = update_loop_tracking(
+            current_tool_name="load_skill",
+            prev_tool_name="load_skill",
+            prev_count=3
+        )
+        self.assertEqual(new_name, "load_skill")
+        self.assertEqual(new_count, 4)
+
+    def test_update_loop_tracking_no_tool_call(self):
+        """无工具调用时，重置追踪"""
+        from myclaw.core.agent import update_loop_tracking
+        new_name, new_count = update_loop_tracking(
+            current_tool_name="",
+            prev_tool_name="load_skill",
+            prev_count=3
+        )
+        self.assertEqual(new_name, "")
+        self.assertEqual(new_count, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

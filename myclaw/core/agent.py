@@ -2,8 +2,8 @@ from typing import List, Optional
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
-from .context import AgentState, trim_context_messages
+from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage, AIMessage
+from .context import AgentState, trim_context_messages, detect_tool_loop
 from .provider import get_provider
 from .tools.builtins import BUILTIN_TOOLS, get_relevant_memory_notes
 from .logger import audit_logger
@@ -14,6 +14,25 @@ from langchain_core.runnables import RunnableConfig
 import os
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI
+
+
+def update_loop_tracking(current_tool_name: str, prev_tool_name: str, prev_count: int) -> tuple[str, int]:
+    """根据当前工具调用更新循环追踪状态。
+
+    Args:
+        current_tool_name: 当前 LLM 返回的第一个 tool_call 名称，无 tool_call 时为空字符串
+        prev_tool_name: 上一轮追踪的工具名
+        prev_count: 上一轮的连续重复次数
+
+    Returns:
+        (new_tool_name, new_count) 更新后的追踪状态
+    """
+    if not current_tool_name:
+        return "", 0
+    if current_tool_name == prev_tool_name:
+        return current_tool_name, prev_count + 1
+    return current_tool_name, 1
+
 
 def create_agent_app(
     provider_name: str = "openai",
@@ -41,6 +60,13 @@ def create_agent_app(
         thread_id = config.get("configurable", {}).get("thread_id", "system_default")
 
         raw_messages = state["messages"]
+
+        # 迭代计数与循环检测
+        iteration_count = state.get("iteration_count", 0) + 1
+        prev_tool_name = state.get("repeated_tool_name", "")
+        prev_count = state.get("repeated_count", 0)
+
+        state_updates["iteration_count"] = iteration_count
 
         # 获取 skill 上下文（如果有）
         skill_context = state.get("skill_context", "")
@@ -198,6 +224,42 @@ def create_agent_app(
             message_count=len(msgs_for_llm)
         )
 
+        # 循环检测：达到中断阈值时不调用 LLM，直接返回续接提示
+        loop_status = detect_tool_loop(iteration_count, prev_tool_name, prev_count)
+
+        if loop_status == "break":
+            # 生成状态摘要
+            last_ai_content = ""
+            for msg in reversed(raw_messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    last_ai_content = msg.content[:200]
+                    break
+
+            resume_prompt = (
+                f"请用一句话（不超过30字）概括以下当前任务状态：\n"
+                f"对话摘要：{state.get('summary', '暂无')}\n"
+                f"最近AI回复：{last_ai_content}"
+            )
+            status_summary = llm.invoke([HumanMessage(content=resume_prompt)], config={"callbacks": []}).content
+
+            resume_msg = AIMessage(
+                content=(
+                    f"⚠️ 检测到任务可能陷入循环。当前已处理 {iteration_count} 轮。\n\n"
+                    f"【当前状态摘要】\n{status_summary}\n\n"
+                    f"请选择：\n"
+                    f"[A] 继续当前方案（基于现有上下文继续）\n"
+                    f"[B] 换个方式重试（放弃当前进度，重新开始）"
+                )
+            )
+            if "messages" not in state_updates:
+                state_updates["messages"] = []
+            state_updates["messages"].append(resume_msg)
+            state_updates["ask_resume"] = True
+            return state_updates
+
+        if loop_status == "warn":
+            print_formatted_text(ANSI(f"\033[K \033[38;5;220m ⚠ 已处理 {iteration_count} 轮，可能存在循环... \033[0m"))
+
         response = llm_with_tools.invoke(msgs_for_llm)
 
         # 解析大模型的回答并记录到日志
@@ -215,6 +277,15 @@ def create_agent_app(
                 event="ai_message",
                 content=response.content
             )
+
+        # 更新工具循环追踪
+        if response.tool_calls:
+            first_tool_name = response.tool_calls[0]["name"]
+        else:
+            first_tool_name = ""
+        new_tool_name, new_count = update_loop_tracking(first_tool_name, prev_tool_name, prev_count)
+        state_updates["repeated_tool_name"] = new_tool_name
+        state_updates["repeated_count"] = new_count
 
         if "messages" not in state_updates:
             state_updates["messages"] = []
