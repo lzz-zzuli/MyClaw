@@ -12,6 +12,18 @@ class AgentState(TypedDict):
     # Skill 上下文（激活的 skill 内容）
     skill_context: str
 
+    # 迭代计数（用于死锁预防）
+    iteration_count: int
+
+    # 重复工具名追踪
+    repeated_tool_name: str
+
+    # 连续重复次数
+    repeated_count: int
+
+    # 中断续接标记
+    ask_resume: bool
+
 def trim_context_messages(messages: list[BaseMessage], trigger_turns: int = 8, keep_turns: int = 4) -> tuple[list[BaseMessage], list[BaseMessage]]:
     # 按照完整‘用户回合’来裁剪上下文：即 一个会从从HumanMessage开始，直到下一个HumanMessage结束，会把AIMessage、tool_calls、ToolMessage一并保留
     # 每个回合以 humanMessage开始，包含后面的ai恢复和工具调用
