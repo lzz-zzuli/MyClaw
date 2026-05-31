@@ -81,4 +81,33 @@ def trim_context_messages(messages: list[BaseMessage], trigger_turns: int = 8, k
 
     return final_messages, discarded_messages
 
+
+LOOP_WARN_THRESHOLD = 20
+LOOP_BREAK_THRESHOLD = 35
+REPEATED_TOOL_BREAK_THRESHOLD = 5
+REPEATED_TOOL_WARN_THRESHOLD = 3
+
+
+def detect_tool_loop(
+    iteration_count: int,
+    repeated_tool_name: str,
+    repeated_count: int
+) -> str:
+    """检测工具调用循环模式。
+
+    Returns:
+        "normal" - 正常运行
+        "warn" - 可疑循环，应提醒用户
+        "break" - 确认循环，应中断并询问用户
+    """
+    if iteration_count >= LOOP_BREAK_THRESHOLD:
+        return "break"
+    if repeated_count >= REPEATED_TOOL_BREAK_THRESHOLD:
+        return "break"
+    if iteration_count >= LOOP_WARN_THRESHOLD:
+        return "warn"
+    if repeated_count >= REPEATED_TOOL_WARN_THRESHOLD:
+        return "warn"
+    return "normal"
+
     
