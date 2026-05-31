@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from myclaw.core.context import AgentState
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.graph import END
 
 
 class TestDeadlockPreventionState(unittest.TestCase):
@@ -112,6 +113,40 @@ class TestAgentNodeIteration(unittest.TestCase):
         )
         self.assertEqual(new_name, "")
         self.assertEqual(new_count, 0)
+
+
+class TestAskResumeRouting(unittest.TestCase):
+
+    def test_route_after_agent_with_ask_resume(self):
+        """ask_resume=True 时路由到 ask_resume 而非 tools"""
+        from myclaw.core.agent import route_after_agent
+        state = {
+            "messages": [AIMessage(content="请选择")],
+            "ask_resume": True
+        }
+        result = route_after_agent(state)
+        self.assertEqual(result, "ask_resume")
+
+    def test_route_after_agent_normal_tool_call(self):
+        """正常 tool_call 时路由到 tools"""
+        from myclaw.core.agent import route_after_agent
+        ai_msg = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "1"}])
+        state = {
+            "messages": [ai_msg],
+            "ask_resume": False
+        }
+        result = route_after_agent(state)
+        self.assertEqual(result, "tools")
+
+    def test_route_after_agent_normal_no_tool(self):
+        """无 tool_call 且无 ask_resume 时路由到 END"""
+        from myclaw.core.agent import route_after_agent
+        state = {
+            "messages": [AIMessage(content="你好")],
+            "ask_resume": False
+        }
+        result = route_after_agent(state)
+        self.assertEqual(result, END)
 
 
 if __name__ == '__main__':

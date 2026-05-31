@@ -34,6 +34,33 @@ def update_loop_tracking(current_tool_name: str, prev_tool_name: str, prev_count
     return current_tool_name, 1
 
 
+def route_after_agent(state: dict) -> str:
+    """agent_node 之后的条件路由：判断是走 tools、ask_resume 还是 END。
+
+    Returns:
+        "tools" - 有 tool_call 需要执行
+        "ask_resume" - 循环中断，等待用户选择
+        END - 正常结束
+    """
+    if state.get("ask_resume"):
+        return "ask_resume"
+
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            return "tools"
+
+    return END
+
+
+def ask_resume_node(state: AgentState) -> dict:
+    """循环中断节点：等待用户选择后处理。此节点为占位节点，
+    实际的 UI 交互在 entry/main.py 的 agent_worker 中处理。
+    此节点不做任何状态变更，仅将 ask_resume 标记清除。"""
+    return {"ask_resume": False}
+
+
 def create_agent_app(
     provider_name: str = "openai",
     model_name: str = "gpt-4o-mini",
@@ -298,14 +325,16 @@ def create_agent_app(
 
     workflow.add_node("agent", agent_node)
     workflow.add_node("tools", tool_node)
+    workflow.add_node("ask_resume", ask_resume_node)
 
 
     workflow.add_edge(START, "agent")
 
     # 每次 agent 思考完，检查它有没有发出工具调用指令。
-    # tools_condition 会自动判断：有指令 -> 走向 "tools" 节点；没指令 -> 走向 END。
-    workflow.add_conditional_edges("agent", tools_condition)
+    # route_after_agent 会判断：有 tool_call -> 走向 "tools"；ask_resume=True -> 走向 "ask_resume"；否则 -> 走向 END。
+    workflow.add_conditional_edges("agent", route_after_agent)
 
+    workflow.add_edge("ask_resume", END)
     workflow.add_edge("tools", "agent")
 
     app = workflow.compile(checkpointer=checkpointer)
