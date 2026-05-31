@@ -265,6 +265,17 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
 
         spinner = SpinnerState()
 
+        custom_style = Style.from_dict({
+            'bottom-toolbar': 'bg:default fg:default noreverse',
+        })
+
+        session = PromptSession(
+            bottom_toolbar=get_bottom_toolbar,
+            style=custom_style,
+            erase_when_done=True,
+            reserve_space_for_menu=0
+        )
+
 
         def get_bottom_toolbar():
             if not spinner.is_spinning:
@@ -332,7 +343,48 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
                                         spinner.tool_msg = f"唤醒内置工具 : {tc['name']}..."
                                         cprint(f"  ●\033[38;5;51m Tool Call: \033[0m{tc['name']}")
                                         cprint('')
-                                        
+
+                                # 检测循环中断续接提示
+                                if hasattr(last_msg, 'content') and '⚠️ 检测到任务可能陷入循环' in (last_msg.content or ''):
+                                    spinner.is_spinning = False
+                                    lines = last_msg.content.strip().split('\n')
+                                    if lines:
+                                        formatted_out = f"  \033[38;5;220m❯\033[0m \033[38;5;250m{lines[0]}"
+                                        for line in lines[1:]:
+                                            formatted_out += f"\n    {line}"
+                                        formatted_out += "\033[0m"
+                                        cprint(formatted_out)
+
+                                    # 等待用户选择
+                                    try:
+                                        choice = await session.prompt_async(
+                                            ANSI("  \033[38;5;220m请输入 A 或 B:\033[0m "),
+                                            placeholder=ANSI("\033[3m\033[38;5;242mA / B\033[0m")
+                                        )
+                                    except (KeyboardInterrupt, EOFError):
+                                        choice = "B"
+
+                                    choice = choice.strip().upper()
+
+                                    if choice == "B":
+                                        # 换个方式重试：清空消息，重置迭代计数
+                                        reset_input = {
+                                            "messages": [HumanMessage(content="/reset_loop")],
+                                            "iteration_count": 0,
+                                            "repeated_tool_name": "",
+                                            "repeated_count": 0
+                                        }
+                                        async for _ in app.astream(reset_input, config=config, stream_mode="updates"):
+                                            pass
+                                        cprint("  \033[38;5;51m✦ 已重置，请重新描述你的需求。\033[0m\n")
+                                    else:
+                                        # 继续当前方案
+                                        continue_input = {"messages": [HumanMessage(content="继续当前方案")]}
+                                        async for _ in app.astream(continue_input, config=config, stream_mode="updates"):
+                                            pass
+                                        cprint("  \033[38;5;51m✦ 继续执行...\033[0m\n")
+                                    continue
+
                                 elif last_msg.content:
                                     spinner.is_spinning = False
                                     
@@ -356,17 +408,6 @@ async def async_main(session_id: str = None, session_name: str = None, persona_n
                 task_queue.task_done()
 
         async def user_input_loop():
-            custom_style = Style.from_dict({
-                'bottom-toolbar': 'bg:default fg:default noreverse',
-            })
-            
-            session = PromptSession(
-                bottom_toolbar=get_bottom_toolbar,
-                style=custom_style,
-                erase_when_done=True,
-                reserve_space_for_menu=0  
-            )
-            
             async def redraw_timer():
                 while True:
                     if spinner.is_spinning:
